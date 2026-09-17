@@ -1,6 +1,5 @@
 const Database = require("better-sqlite3");
 
-const Database = require("better-sqlite3");
 const path = require("path");
 
 const DATABASE_PATH = process.env.DB_PATH || path.join(__dirname, "tzockey.db");
