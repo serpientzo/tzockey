@@ -1,4 +1,5 @@
 require("dotenv").config();
+require("../api/server");
 
 require("../database/database");
 

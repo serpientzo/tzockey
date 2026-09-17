@@ -851,7 +851,7 @@ app.use((error, req, res, next) => {
 |--------------------------------------------------------------------------
 */
 
-app.listen(PORT, async () => {
+app.listen(PORT, "0.0.0.0", async () => {
   logger.info(`Tzockey API berjalan di port ${PORT}`);
 
   await createBackup();
