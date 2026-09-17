@@ -1,6 +1,11 @@
 const Database = require("better-sqlite3");
 
-const db = new Database("src/database/tzockey.db");
+const Database = require("better-sqlite3");
+const path = require("path");
+
+const DATABASE_PATH = process.env.DB_PATH || path.join(__dirname, "tzockey.db");
+
+const db = new Database(DATABASE_PATH);
 
 db.pragma("journal_mode = WAL");
 db.pragma("foreign_keys = ON");
