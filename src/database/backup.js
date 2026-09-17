@@ -4,12 +4,10 @@ const path = require("path");
 const db = require("./database");
 const logger = require("../utils/logger");
 
-const BACKUP_DIR = path.join(__dirname, "backups");
+const BACKUP_DIR = process.env.DB_BACKUP_DIR || path.join(__dirname, "backups");
 
 if (!fs.existsSync(BACKUP_DIR)) {
-  fs.mkdirSync(BACKUP_DIR, {
-    recursive: true,
-  });
+  fs.mkdirSync(BACKUP_DIR, { recursive: true });
 }
 
 async function createBackup() {

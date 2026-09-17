@@ -1,9 +1,9 @@
 const fs = require("fs");
 const path = require("path");
 
-const BACKUP_DIR = path.join(__dirname, "backups");
+const BACKUP_DIR = process.env.DB_BACKUP_DIR || path.join(__dirname, "backups");
 
-const DATABASE_PATH = path.join(__dirname, "tzockey.db");
+const DATABASE_PATH = process.env.DB_PATH || path.join(__dirname, "tzockey.db");
 
 const backupName = process.argv[2];
 
