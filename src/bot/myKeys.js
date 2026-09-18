@@ -1,21 +1,31 @@
-const { SlashCommandBuilder, EmbedBuilder } = require("discord.js");
+const {
+  SlashCommandBuilder,
+  EmbedBuilder,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+} = require("discord.js");
 
 const db = require("../database/database");
 
-function formatRemaining(milliseconds) {
-  if (milliseconds <= 0) {
-    return "Expired";
+function formatDuration(seconds) {
+  if (!seconds || seconds <= 0) {
+    return "0s";
   }
 
-  const totalSeconds = Math.floor(milliseconds / 1000);
+  let remaining = Math.floor(seconds);
 
-  const days = Math.floor(totalSeconds / 86400);
+  const days = Math.floor(remaining / 86400);
 
-  const hours = Math.floor((totalSeconds % 86400) / 3600);
+  remaining %= 86400;
 
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const hours = Math.floor(remaining / 3600);
 
-  const seconds = totalSeconds % 60;
+  remaining %= 3600;
+
+  const minutes = Math.floor(remaining / 60);
+
+  const secs = remaining % 60;
 
   const parts = [];
 
@@ -31,80 +41,54 @@ function formatRemaining(milliseconds) {
     parts.push(`${minutes}m`);
   }
 
-  if (seconds > 0) {
-    parts.push(`${seconds}s`);
+  if (secs > 0 || parts.length === 0) {
+    parts.push(`${secs}s`);
   }
 
   return parts.join(" ");
 }
 
-const command = new SlashCommandBuilder()
-  .setName("my-keys")
-  .setDescription("Melihat key Tzockey milik kamu");
+function formatRemaining(expiresAt, status) {
+  if (status === "Expired") {
+    return "Expired";
+  }
 
-async function execute(interaction) {
-  return showMyKeys(interaction);
+  if (!expiresAt) {
+    return "Tidak ada";
+  }
+
+  const remaining = expiresAt - Date.now();
+
+  if (remaining <= 0) {
+    return "Expired";
+  }
+
+  return formatDuration(Math.floor(remaining / 1000));
 }
 
-async function showMyKeys(interaction) {
-  const discordId = interaction.user.id;
+function buildKeyEmbed(keyData) {
+  const originalDuration = Number(keyData.duration_seconds || 0);
 
-  const keyData = db
-    .prepare(
-      `
-        SELECT
-            keys.*,
-            products.name AS product_name,
-            products.status AS product_status
-        FROM keys
-        JOIN products
-            ON products.id = keys.product_id
-        WHERE keys.discord_id = ?
-        ORDER BY keys.created_at DESC
-        LIMIT 1
-    `,
-    )
-    .get(discordId);
+  const extendedDuration = Number(keyData.extended_seconds || 0);
 
-  if (!keyData) {
-    return interaction.reply({
-      content: "Kamu belum memiliki key.",
-      ephemeral: true,
-    });
-  }
+  const totalDuration = originalDuration + extendedDuration;
 
-  if (
-    keyData.status === "Active" &&
-    keyData.expires_at &&
-    Date.now() >= keyData.expires_at
-  ) {
-    db.prepare(
-      `
-        UPDATE keys
-        SET status = 'Expired'
-        WHERE id = ?
-    `,
-    ).run(keyData.id);
-
-    keyData.status = "Expired";
-  }
-
-  const remaining = keyData.expires_at
-    ? formatRemaining(keyData.expires_at - Date.now())
-    : "N/A";
-
-  const embed = new EmbedBuilder()
-    .setTitle("My Key")
-    .setDescription("Informasi key Tzockey kamu.")
+  return new EmbedBuilder()
+    .setTitle("Tzockey Key")
     .addFields(
       {
+        name: "Key",
+        value: `\`${keyData.key}\``,
+        inline: false,
+      },
+      {
         name: "Product",
-        value: `\`${keyData.product_name}\``,
+        value: keyData.product_name,
         inline: true,
       },
       {
         name: "Plan",
-        value: `\`${keyData.plan}\``,
+        value: keyData.plan,
         inline: true,
       },
       {
@@ -113,35 +97,170 @@ async function showMyKeys(interaction) {
         inline: true,
       },
       {
-        name: "Key",
-        value: `\`${keyData.key}\``,
-        inline: false,
+        name: "Original Duration",
+        value: `\`${formatDuration(originalDuration)}\``,
+        inline: true,
+      },
+      {
+        name: "Extended Time",
+        value: `\`${formatDuration(extendedDuration)}\``,
+        inline: true,
+      },
+      {
+        name: "Total Duration",
+        value: `\`${formatDuration(totalDuration)}\``,
+        inline: true,
       },
       {
         name: "Expires",
         value: keyData.expires_at
           ? `<t:${Math.floor(keyData.expires_at / 1000)}:F>`
-          : "N/A",
-        inline: true,
+          : "Tidak ada",
+        inline: false,
       },
       {
         name: "Remaining",
-        value: `\`${remaining}\``,
+        value: `\`${formatRemaining(keyData.expires_at, keyData.status)}\``,
         inline: true,
       },
-      {
-        name: "HWID",
-        value: keyData.hwid ? `\`${keyData.hwid}\`` : "Not registered",
-        inline: false,
-      },
     )
-    .setFooter({
-      text: "Tzockey Access System",
-    })
     .setTimestamp();
+}
+
+const command = new SlashCommandBuilder()
+  .setName("my-keys")
+  .setDescription("Melihat key yang terhubung dengan akun Discord");
+
+async function execute(interaction) {
+  const userId = interaction.user.id;
+
+  const now = Date.now();
+
+  /*
+  |--------------------------------------------------------------------------
+  | Expire Old Keys
+  |--------------------------------------------------------------------------
+  */
+
+  const expireKeys = db.transaction(() => {
+    const expiredKeys = db
+      .prepare(
+        `
+              SELECT id
+              FROM keys
+              WHERE discord_id = ?
+              AND status = 'Active'
+              AND expires_at IS NOT NULL
+              AND expires_at <= ?
+            `,
+      )
+      .all(userId, now);
+
+    if (expiredKeys.length === 0) {
+      return;
+    }
+
+    for (const keyData of expiredKeys) {
+      db.prepare(
+        `
+            UPDATE keys
+            SET status = 'Expired'
+            WHERE id = ?
+          `,
+      ).run(keyData.id);
+
+      db.prepare(
+        `
+            DELETE FROM sessions
+            WHERE key_id = ?
+          `,
+      ).run(keyData.id);
+    }
+  });
+
+  try {
+    expireKeys();
+  } catch (error) {
+    console.error("My Keys Expire Error:", error);
+
+    return interaction.reply({
+      content: "Terjadi kesalahan saat memperbarui status key.",
+      ephemeral: true,
+    });
+  }
+
+  /*
+  |--------------------------------------------------------------------------
+  | Get User Keys
+  |--------------------------------------------------------------------------
+  */
+
+  const keys = db
+    .prepare(
+      `
+        SELECT
+          keys.*,
+          products.name AS product_name,
+          products.status AS product_status
+        FROM keys
+        JOIN products
+          ON products.id = keys.product_id
+        WHERE keys.discord_id = ?
+        ORDER BY keys.id DESC
+      `,
+    )
+    .all(userId);
+
+  if (keys.length === 0) {
+    return interaction.reply({
+      content: "Kamu tidak punya key.\n\n" + "Dapatkan access terlebih dahulu.",
+      ephemeral: true,
+    });
+  }
+
+  /*
+  |--------------------------------------------------------------------------
+  | Build Embeds
+  |--------------------------------------------------------------------------
+  */
+
+  const embeds = [];
+  const components = [];
+
+  for (const keyData of keys.slice(0, 10)) {
+    embeds.push(buildKeyEmbed(keyData));
+
+    if (keyData.status === "Expired") {
+      components.push(
+        new ButtonBuilder()
+          .setCustomId(`tzockey_renew_${keyData.id}`)
+          .setLabel("Renew Access")
+          .setStyle(ButtonStyle.Primary),
+      );
+    }
+  }
+
+  /*
+  |--------------------------------------------------------------------------
+  | Build Button Rows
+  |--------------------------------------------------------------------------
+  */
+
+  const rows = [];
+
+  for (let i = 0; i < components.length; i += 5) {
+    rows.push(new ActionRowBuilder().addComponents(components.slice(i, i + 5)));
+  }
+
+  /*
+  |--------------------------------------------------------------------------
+  | Response
+  |--------------------------------------------------------------------------
+  */
 
   return interaction.reply({
-    embeds: [embed],
+    embeds,
+    components: rows,
     ephemeral: true,
   });
 }
@@ -149,5 +268,5 @@ async function showMyKeys(interaction) {
 module.exports = {
   command,
   execute,
-  showMyKeys,
+  showMyKeys: execute,
 };

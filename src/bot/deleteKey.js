@@ -19,7 +19,7 @@ async function execute(interaction) {
   const keyData = db
     .prepare(
       `
-        SELECT *
+        SELECT id, key
         FROM keys
         WHERE key = ?
       `,
@@ -33,15 +33,19 @@ async function execute(interaction) {
     });
   }
 
-  db.prepare(
-    `
-      DELETE FROM keys
-      WHERE key = ?
-    `,
-  ).run(key);
+  const deleteKey = db.transaction((keyId) => {
+    db.prepare(
+      `
+        DELETE FROM keys
+        WHERE id = ?
+      `,
+    ).run(keyId);
+  });
+
+  deleteKey(keyData.id);
 
   await interaction.reply({
-    content: `Key berhasil dihapus.\n\n` + `Key: \`${key}\``,
+    content: "Key berhasil dihapus.\n\n" + `Key: \`${keyData.key}\``,
     ephemeral: true,
   });
 }

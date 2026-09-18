@@ -16,6 +16,12 @@ const command = new SlashCommandBuilder()
 async function execute(interaction) {
   const user = interaction.options.getUser("user");
 
+  /*
+  |--------------------------------------------------------------------------
+  | Find Active Key
+  |--------------------------------------------------------------------------
+  */
+
   const keyData = db
     .prepare(
       `
@@ -35,24 +41,58 @@ async function execute(interaction) {
     });
   }
 
-  // Hapus session lama
-  db.prepare(
-    `
-      DELETE FROM sessions
-      WHERE key_id = ?
-    `,
-  ).run(keyData.id);
+  /*
+  |--------------------------------------------------------------------------
+  | Reset HWID
+  |--------------------------------------------------------------------------
+  */
 
-  // Reset HWID tanpa menambah reset_count
-  db.prepare(
-    `
-      UPDATE keys
-      SET hwid = NULL
-      WHERE id = ?
-    `,
-  ).run(keyData.id);
+  try {
+    const adminResetHwid = db.transaction(() => {
+      /*
+        | Hapus session lama.
+        */
 
-  await interaction.reply({
+      db.prepare(
+        `
+            DELETE FROM sessions
+            WHERE key_id = ?
+          `,
+      ).run(keyData.id);
+
+      /*
+        | Reset HWID.
+        |
+        | reset_count sengaja tidak diubah.
+        */
+
+      db.prepare(
+        `
+            UPDATE keys
+            SET hwid = NULL
+            WHERE id = ?
+            AND status = 'Active'
+          `,
+      ).run(keyData.id);
+    });
+
+    adminResetHwid();
+  } catch (error) {
+    console.error("Admin Reset HWID Database Error:", error);
+
+    return interaction.reply({
+      content: "Terjadi kesalahan saat melakukan admin reset HWID.",
+      ephemeral: true,
+    });
+  }
+
+  /*
+  |--------------------------------------------------------------------------
+  | Response
+  |--------------------------------------------------------------------------
+  */
+
+  return interaction.reply({
     content:
       "HWID berhasil di-reset.\n\n" +
       `User: ${user.tag}\n` +

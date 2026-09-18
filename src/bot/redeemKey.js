@@ -18,126 +18,238 @@ const command = new SlashCommandBuilder()
       .setRequired(true),
   );
 
-async function redeemKey(interaction, keyInput) {
+function redeemKey(interaction, keyInput) {
   const key = keyInput.trim().toUpperCase();
+
   const discordId = interaction.user.id;
 
-  const existingKey = db
-    .prepare(
-      `
-        SELECT *
-        FROM keys
-        WHERE discord_id = ?
-        AND status = 'Active'
-        LIMIT 1
-    `,
-    )
-    .get(discordId);
+  if (!key) {
+    return {
+      success: false,
+      message: "Key tidak boleh kosong.",
+    };
+  }
 
-  if (existingKey) {
-    if (existingKey.expires_at && Date.now() < existingKey.expires_at) {
-      return interaction.reply({
-        content: "Kamu masih memiliki key yang aktif.",
-        ephemeral: true,
-      });
+  const redeem = db.transaction(() => {
+    /*
+    |--------------------------------------------------------------------------
+    | Find Submitted Key
+    |--------------------------------------------------------------------------
+    */
+
+    const keyData = db
+      .prepare(
+        `
+          SELECT
+            keys.*,
+            products.name AS product_name,
+            products.status AS product_status
+          FROM keys
+          JOIN products
+            ON products.id = keys.product_id
+          WHERE keys.key = ?
+        `,
+      )
+      .get(key);
+
+    if (!keyData) {
+      return {
+        success: false,
+        message: "Key tidak ditemukan.",
+      };
     }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Validate Key Status
+    |--------------------------------------------------------------------------
+    */
+
+    if (keyData.status !== "Unused") {
+      return {
+        success: false,
+        message:
+          "Key tidak dapat digunakan.\n\n" + `Status: \`${keyData.status}\``,
+      };
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Validate Product
+    |--------------------------------------------------------------------------
+    */
+
+    if (keyData.product_status !== "Active") {
+      return {
+        success: false,
+        message: "Product dari key ini sedang tidak aktif.",
+      };
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Validate Duration
+    |--------------------------------------------------------------------------
+    */
+
+    const durationSeconds = Number(keyData.duration_seconds);
+
+    if (!Number.isSafeInteger(durationSeconds) || durationSeconds <= 0) {
+      return {
+        success: false,
+        message: "Durasi key tidak valid. Hubungi admin.",
+      };
+    }
+
+    const durationMilliseconds = durationSeconds * 1000;
+
+    if (!Number.isSafeInteger(durationMilliseconds)) {
+      return {
+        success: false,
+        message: "Durasi key terlalu besar.",
+      };
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Check Existing Active Key
+    |--------------------------------------------------------------------------
+    */
+
+    const existingKey = db
+      .prepare(
+        `
+          SELECT *
+          FROM keys
+          WHERE discord_id = ?
+          AND status = 'Active'
+          LIMIT 1
+        `,
+      )
+      .get(discordId);
+
+    const now = Date.now();
+
+    if (existingKey) {
+      if (existingKey.expires_at && existingKey.expires_at > now) {
+        return {
+          success: false,
+          message: "Kamu masih memiliki key yang aktif.",
+        };
+      }
+
+      /*
+      | Existing key sudah expired.
+      */
+
+      db.prepare(
+        `
+          UPDATE keys
+          SET status = 'Expired'
+          WHERE id = ?
+        `,
+      ).run(existingKey.id);
+
+      /*
+      | Hapus session lama agar access
+      | dari key expired tidak dapat digunakan.
+      */
+
+      db.prepare(
+        `
+          DELETE FROM sessions
+          WHERE key_id = ?
+        `,
+      ).run(existingKey.id);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Create New Expiration
+    |--------------------------------------------------------------------------
+    */
+
+    const expiresAt = now + durationMilliseconds;
+
+    if (!Number.isSafeInteger(expiresAt)) {
+      return {
+        success: false,
+        message: "Tanggal expiration tidak valid.",
+      };
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Activate Key
+    |--------------------------------------------------------------------------
+    */
 
     db.prepare(
       `
         UPDATE keys
-        SET status = 'Expired'
-        WHERE id = ?
-    `,
-    ).run(existingKey.id);
-  }
-
-  const keyData = db
-    .prepare(
-      `
-        SELECT
-            keys.*,
-            products.name AS product_name
-        FROM keys
-        JOIN products
-            ON products.id = keys.product_id
-        WHERE keys.key = ?
-    `,
-    )
-    .get(key);
-
-  if (!keyData) {
-    return interaction.reply({
-      content: "Key tidak ditemukan.",
-      ephemeral: true,
-    });
-  }
-
-  if (keyData.status !== "Unused") {
-    return interaction.reply({
-      content:
-        `Key tidak dapat digunakan.\n\n` + `Status: \`${keyData.status}\``,
-      ephemeral: true,
-    });
-  }
-
-  const product = db
-    .prepare(
-      `
-        SELECT *
-        FROM products
-        WHERE id = ?
-        AND status = 'Active'
-    `,
-    )
-    .get(keyData.product_id);
-
-  if (!product) {
-    return interaction.reply({
-      content: "Product dari key ini sedang tidak aktif.",
-      ephemeral: true,
-    });
-  }
-
-  if (
-    !Number.isInteger(keyData.duration_seconds) ||
-    keyData.duration_seconds <= 0
-  ) {
-    return interaction.reply({
-      content: "Durasi key tidak valid. Hubungi admin.",
-      ephemeral: true,
-    });
-  }
-
-  const now = Date.now();
-  const expiresAt = now + keyData.duration_seconds * 1000;
-
-  db.prepare(
-    `
-      UPDATE keys
-      SET
+        SET
           discord_id = ?,
           expires_at = ?,
-          status = 'Active'
-      WHERE id = ?
-  `,
-  ).run(discordId, expiresAt, keyData.id);
+          status = 'Active',
+          hwid = NULL
+        WHERE id = ?
+        AND status = 'Unused'
+      `,
+    ).run(discordId, expiresAt, keyData.id);
 
-  return interaction.reply({
-    content:
-      `Key berhasil di-redeem.\n\n` +
-      `Product: \`${product.name}\`\n` +
-      `Key: \`${keyData.key}\`\n` +
-      `Plan: \`${keyData.plan}\`\n` +
-      `Status: \`Active\`\n` +
-      `Expires: <t:${Math.floor(expiresAt / 1000)}:F>`,
-    ephemeral: true,
+    /*
+    |--------------------------------------------------------------------------
+    | Verify Update
+    |--------------------------------------------------------------------------
+    */
+
+    const updatedKey = db
+      .prepare(
+        `
+          SELECT status
+          FROM keys
+          WHERE id = ?
+        `,
+      )
+      .get(keyData.id);
+
+    if (!updatedKey || updatedKey.status !== "Active") {
+      throw new Error("Key gagal diaktifkan.");
+    }
+
+    return {
+      success: true,
+      message:
+        "Key berhasil di-redeem.\n\n" +
+        `Product: \`${keyData.product_name}\`\n` +
+        `Key: \`${keyData.key}\`\n` +
+        `Plan: \`${keyData.plan}\`\n` +
+        `Status: \`Active\`\n` +
+        `Expires: <t:${Math.floor(expiresAt / 1000)}:F>`,
+    };
   });
+
+  return redeem();
 }
 
 async function execute(interaction) {
   const key = interaction.options.getString("key");
 
-  return redeemKey(interaction, key);
+  try {
+    const result = redeemKey(interaction, key);
+
+    return interaction.reply({
+      content: result.message,
+      ephemeral: true,
+    });
+  } catch (error) {
+    console.error("Redeem Key Error:", error);
+
+    return interaction.reply({
+      content: "Terjadi kesalahan saat redeem key.",
+      ephemeral: true,
+    });
+  }
 }
 
 async function showRedeemModal(interaction) {
@@ -164,7 +276,21 @@ async function showRedeemModal(interaction) {
 async function handleModal(interaction) {
   const key = interaction.fields.getTextInputValue("key");
 
-  return redeemKey(interaction, key);
+  try {
+    const result = redeemKey(interaction, key);
+
+    return interaction.reply({
+      content: result.message,
+      ephemeral: true,
+    });
+  } catch (error) {
+    console.error("Redeem Key Modal Error:", error);
+
+    return interaction.reply({
+      content: "Terjadi kesalahan saat redeem key.",
+      ephemeral: true,
+    });
+  }
 }
 
 module.exports = {

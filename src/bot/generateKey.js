@@ -68,27 +68,28 @@ async function execute(interaction) {
 
   const unit = interaction.options.getString("unit");
 
-  const product = db
-    .prepare(
-      `
-        SELECT *
-        FROM products
-        WHERE LOWER(name) = LOWER(?)
-        AND status = 'Active'
-    `,
-    )
-    .get(productName);
+  /*
+  |--------------------------------------------------------------------------
+  | Validate Unit
+  |--------------------------------------------------------------------------
+  */
 
-  if (!product) {
+  if (!Object.prototype.hasOwnProperty.call(UNIT_MULTIPLIER, unit)) {
     return interaction.reply({
-      content: `❌ Product \`${productName}\` tidak ditemukan atau tidak aktif.`,
+      content: "Unit duration tidak valid.",
       ephemeral: true,
     });
   }
 
-  if (!UNIT_MULTIPLIER[unit]) {
+  /*
+  |--------------------------------------------------------------------------
+  | Validate Duration
+  |--------------------------------------------------------------------------
+  */
+
+  if (!Number.isInteger(duration) || duration < 1) {
     return interaction.reply({
-      content: "❌ Unit duration tidak valid.",
+      content: "Duration tidak valid.",
       ephemeral: true,
     });
   }
@@ -96,7 +97,7 @@ async function execute(interaction) {
   if (duration > UNIT_MAX[unit]) {
     return interaction.reply({
       content:
-        `❌ Duration terlalu besar untuk unit \`${unit}\`.\n\n` +
+        `Duration terlalu besar untuk unit \`${unit}\`.\n\n` +
         `Maksimal: \`${UNIT_MAX[unit]}\` ${unit}.`,
       ephemeral: true,
     });
@@ -104,43 +105,101 @@ async function execute(interaction) {
 
   const durationSeconds = duration * UNIT_MULTIPLIER[unit];
 
+  if (!Number.isSafeInteger(durationSeconds)) {
+    return interaction.reply({
+      content: "Duration menghasilkan nilai yang tidak valid.",
+      ephemeral: true,
+    });
+  }
+
+  /*
+  |--------------------------------------------------------------------------
+  | Find Product
+  |--------------------------------------------------------------------------
+  */
+
+  const product = db
+    .prepare(
+      `
+        SELECT *
+        FROM products
+        WHERE LOWER(name) = LOWER(?)
+        AND status = 'Active'
+      `,
+    )
+    .get(productName);
+
+  if (!product) {
+    return interaction.reply({
+      content: `Product \`${productName}\` tidak ditemukan atau tidak aktif.`,
+      ephemeral: true,
+    });
+  }
+
+  /*
+  |--------------------------------------------------------------------------
+  | Generate Key
+  |--------------------------------------------------------------------------
+  */
+
   const key = generateKey();
   const createdAt = Date.now();
 
   const plan = `${duration} ${unit}`;
 
-  db.prepare(
-    `
+  /*
+  |--------------------------------------------------------------------------
+  | Insert Key
+  |--------------------------------------------------------------------------
+  */
+
+  try {
+    db.prepare(
+      `
         INSERT INTO keys (
-            key,
-            product_id,
-            plan,
-            duration_seconds,
-            created_at,
-            expires_at,
-            discord_id,
-            hwid,
-            status,
-            reset_count
+          key,
+          product_id,
+          plan,
+          duration_seconds,
+          created_at,
+          expires_at,
+          discord_id,
+          hwid,
+          status,
+          reset_count
         )
         VALUES (
-            ?,
-            ?,
-            ?,
-            ?,
-            ?,
-            NULL,
-            NULL,
-            NULL,
-            'Unused',
-            0
+          ?,
+          ?,
+          ?,
+          ?,
+          ?,
+          NULL,
+          NULL,
+          NULL,
+          'Unused',
+          0
         )
-    `,
-  ).run(key, product.id, plan, durationSeconds, createdAt);
+      `,
+    ).run(key, product.id, plan, durationSeconds, createdAt);
+  } catch (error) {
+    console.error("Generate Key Database Error:", error);
 
-  await interaction.reply({
+    return interaction.reply({
+      content: "Terjadi kesalahan saat menyimpan key.",
+      ephemeral: true,
+    });
+  }
+
+  /*
+  |--------------------------------------------------------------------------
+  | Response
+  |--------------------------------------------------------------------------
+  */
+
+  return interaction.reply({
     content:
-      `🔑 **Key berhasil dibuat!**\n\n` +
+      "**Key berhasil dibuat.**\n\n" +
       `Key: \`${key}\`\n` +
       `Product: \`${product.name}\`\n` +
       `Duration: \`${duration} ${unit}\`\n` +
@@ -150,8 +209,15 @@ async function execute(interaction) {
   });
 }
 
+/*
+|--------------------------------------------------------------------------
+| Autocomplete
+|--------------------------------------------------------------------------
+*/
+
 async function autocomplete(interaction) {
-  const focusedValue = interaction.options.getString("product").toLowerCase();
+  const focusedValue =
+    interaction.options.getString("product")?.trim().toLowerCase() || "";
 
   const products = db
     .prepare(
@@ -162,11 +228,11 @@ async function autocomplete(interaction) {
         AND LOWER(name) LIKE ?
         ORDER BY name ASC
         LIMIT 25
-    `,
+      `,
     )
     .all(`%${focusedValue}%`);
 
-  await interaction.respond(
+  return interaction.respond(
     products.map((product) => ({
       name: product.name,
       value: product.name,

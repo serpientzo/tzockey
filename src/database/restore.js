@@ -12,6 +12,17 @@ if (!backupName) {
   process.exit(1);
 }
 
+/*
+|--------------------------------------------------------------------------
+| Validate backup name
+|--------------------------------------------------------------------------
+*/
+
+if (!backupName.endsWith(".db") || backupName !== path.basename(backupName)) {
+  console.error("File backup tidak valid.");
+  process.exit(1);
+}
+
 const backupPath = path.join(BACKUP_DIR, backupName);
 
 if (!fs.existsSync(backupPath)) {
@@ -19,10 +30,11 @@ if (!fs.existsSync(backupPath)) {
   process.exit(1);
 }
 
-if (!backupName.endsWith(".db")) {
-  console.error("File backup tidak valid.");
-  process.exit(1);
-}
+/*
+|--------------------------------------------------------------------------
+| Backup current database
+|--------------------------------------------------------------------------
+*/
 
 if (fs.existsSync(DATABASE_PATH)) {
   const currentBackupPath = path.join(
@@ -30,11 +42,27 @@ if (fs.existsSync(DATABASE_PATH)) {
     `before-restore-${Date.now()}.db`,
   );
 
-  fs.copyFileSync(DATABASE_PATH, currentBackupPath);
+  try {
+    fs.copyFileSync(DATABASE_PATH, currentBackupPath);
 
-  console.log(`Database saat ini dicadangkan ke: ${currentBackupPath}`);
+    console.log(`Database saat ini dicadangkan ke: ${currentBackupPath}`);
+  } catch (error) {
+    console.error(`Gagal mencadangkan database saat ini: ${error.message}`);
+    process.exit(1);
+  }
 }
 
-fs.copyFileSync(backupPath, DATABASE_PATH);
+/*
+|--------------------------------------------------------------------------
+| Restore
+|--------------------------------------------------------------------------
+*/
 
-console.log(`Database berhasil di-restore dari: ${backupName}`);
+try {
+  fs.copyFileSync(backupPath, DATABASE_PATH);
+
+  console.log(`Database berhasil di-restore dari: ${backupName}`);
+} catch (error) {
+  console.error(`Gagal melakukan restore database: ${error.message}`);
+  process.exit(1);
+}

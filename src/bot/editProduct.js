@@ -2,6 +2,9 @@ const { SlashCommandBuilder, PermissionFlagsBits } = require("discord.js");
 
 const db = require("../database/database");
 
+const MAX_PRODUCT_NAME_LENGTH = 100;
+const MAX_SCRIPT_URL_LENGTH = 2048;
+
 const command = new SlashCommandBuilder()
   .setName("edit-product")
   .setDescription("Mengubah informasi Tzockey product")
@@ -16,54 +19,87 @@ const command = new SlashCommandBuilder()
     option
       .setName("name")
       .setDescription("Nama baru product")
-      .setRequired(false),
+      .setRequired(false)
+      .setMaxLength(MAX_PRODUCT_NAME_LENGTH),
   )
   .addStringOption((option) =>
     option
       .setName("script_url")
       .setDescription("Script URL baru")
-      .setRequired(false),
+      .setRequired(false)
+      .setMaxLength(MAX_SCRIPT_URL_LENGTH),
   )
   .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
 
 async function execute(interaction) {
   const productName = interaction.options.getString("product").trim();
 
-  const newName = interaction.options.getString("name");
+  const newNameInput = interaction.options.getString("name");
 
-  const newScriptUrl = interaction.options.getString("script_url");
+  const newScriptUrlInput = interaction.options.getString("script_url");
 
-  if (!newName && !newScriptUrl) {
+  /*
+  |--------------------------------------------------------------------------
+  | Validate Changes
+  |--------------------------------------------------------------------------
+  */
+
+  const hasNameChange = newNameInput !== null;
+
+  const hasUrlChange = newScriptUrlInput !== null;
+
+  if (!hasNameChange && !hasUrlChange) {
     return interaction.reply({
       content:
-        "❌ Masukkan minimal satu perubahan:\n" + "`name` atau `script_url`.",
+        "Masukkan minimal satu perubahan:\n" + "`name` atau `script_url`.",
       ephemeral: true,
     });
   }
 
+  /*
+  |--------------------------------------------------------------------------
+  | Find Product
+  |--------------------------------------------------------------------------
+  */
+
   const product = db
     .prepare(
       `
-        SELECT *
+        SELECT
+          id,
+          name,
+          script_url,
+          status
         FROM products
         WHERE LOWER(name) = LOWER(?)
-    `,
+      `,
     )
     .get(productName);
 
   if (!product) {
     return interaction.reply({
-      content: `❌ Product \`${productName}\` tidak ditemukan.`,
+      content: `Product \`${productName}\` tidak ditemukan.`,
       ephemeral: true,
     });
   }
 
-  if (newName !== null) {
-    const trimmedName = newName.trim();
+  /*
+  |--------------------------------------------------------------------------
+  | Validate New Name
+  |--------------------------------------------------------------------------
+  */
 
-    if (trimmedName.length < 1 || trimmedName.length > 100) {
+  let finalName = product.name;
+
+  if (hasNameChange) {
+    const trimmedName = newNameInput.trim();
+
+    if (
+      trimmedName.length < 1 ||
+      trimmedName.length > MAX_PRODUCT_NAME_LENGTH
+    ) {
       return interaction.reply({
-        content: "❌ Nama product harus memiliki 1-100 karakter.",
+        content: `Nama product harus memiliki 1-${MAX_PRODUCT_NAME_LENGTH} karakter.`,
         ephemeral: true,
       });
     }
@@ -71,67 +107,104 @@ async function execute(interaction) {
     const existingName = db
       .prepare(
         `
-            SELECT id
-            FROM products
-            WHERE LOWER(name) = LOWER(?)
-            AND id != ?
+          SELECT id
+          FROM products
+          WHERE LOWER(name) = LOWER(?)
+          AND id != ?
         `,
       )
       .get(trimmedName, product.id);
 
     if (existingName) {
       return interaction.reply({
-        content: `❌ Product \`${trimmedName}\` sudah ada.`,
+        content: `Product \`${trimmedName}\` sudah ada.`,
         ephemeral: true,
       });
     }
+
+    finalName = trimmedName;
   }
 
-  if (newScriptUrl !== null) {
-    const trimmedUrl = newScriptUrl.trim();
+  /*
+  |--------------------------------------------------------------------------
+  | Validate New Script URL
+  |--------------------------------------------------------------------------
+  */
 
-    if (trimmedUrl.length > 2048) {
+  let finalScriptUrl = product.script_url;
+
+  if (hasUrlChange) {
+    const trimmedUrl = newScriptUrlInput.trim();
+
+    if (trimmedUrl.length < 1 || trimmedUrl.length > MAX_SCRIPT_URL_LENGTH) {
       return interaction.reply({
-        content: "❌ Script URL terlalu panjang.",
+        content: `Script URL harus memiliki 1-${MAX_SCRIPT_URL_LENGTH} karakter.`,
         ephemeral: true,
       });
     }
+
+    let parsedUrl;
 
     try {
-      const url = new URL(trimmedUrl);
-
-      if (url.protocol !== "https:" && url.protocol !== "http:") {
-        return interaction.reply({
-          content: "❌ Script URL harus menggunakan HTTP atau HTTPS.",
-          ephemeral: true,
-        });
-      }
+      parsedUrl = new URL(trimmedUrl);
     } catch {
       return interaction.reply({
-        content: "❌ Script URL tidak valid.",
+        content: "Script URL tidak valid.",
         ephemeral: true,
       });
     }
+
+    if (parsedUrl.protocol !== "https:") {
+      return interaction.reply({
+        content: "Script URL harus menggunakan HTTPS.",
+        ephemeral: true,
+      });
+    }
+
+    if (parsedUrl.username || parsedUrl.password) {
+      return interaction.reply({
+        content: "Script URL tidak boleh mengandung username atau password.",
+        ephemeral: true,
+      });
+    }
+
+    finalScriptUrl = parsedUrl.toString();
   }
 
-  const finalName = newName !== null ? newName.trim() : product.name;
+  /*
+  |--------------------------------------------------------------------------
+  | Update Product
+  |--------------------------------------------------------------------------
+  */
 
-  const finalScriptUrl =
-    newScriptUrl !== null ? newScriptUrl.trim() : product.script_url;
-
-  db.prepare(
-    `
+  try {
+    db.prepare(
+      `
         UPDATE products
         SET
-            name = ?,
-            script_url = ?
+          name = ?,
+          script_url = ?
         WHERE id = ?
-    `,
-  ).run(finalName, finalScriptUrl, product.id);
+      `,
+    ).run(finalName, finalScriptUrl, product.id);
+  } catch (error) {
+    console.error("Edit Product Database Error:", error);
 
-  await interaction.reply({
+    return interaction.reply({
+      content: "Terjadi kesalahan saat memperbarui product.",
+      ephemeral: true,
+    });
+  }
+
+  /*
+  |--------------------------------------------------------------------------
+  | Response
+  |--------------------------------------------------------------------------
+  */
+
+  return interaction.reply({
     content:
-      `✅ **Product berhasil diperbarui!**\n\n` +
+      "Product berhasil diperbarui.\n\n" +
       `Old Name: \`${product.name}\`\n` +
       `New Name: \`${finalName}\`\n\n` +
       `Script URL: \`${finalScriptUrl}\``,
@@ -139,8 +212,15 @@ async function execute(interaction) {
   });
 }
 
+/*
+|--------------------------------------------------------------------------
+| Autocomplete
+|--------------------------------------------------------------------------
+*/
+
 async function autocomplete(interaction) {
-  const focusedValue = interaction.options.getString("product").toLowerCase();
+  const focusedValue =
+    interaction.options.getString("product")?.trim().toLowerCase() || "";
 
   const products = db
     .prepare(
@@ -150,11 +230,11 @@ async function autocomplete(interaction) {
         WHERE LOWER(name) LIKE ?
         ORDER BY name ASC
         LIMIT 25
-    `,
+      `,
     )
     .all(`%${focusedValue}%`);
 
-  await interaction.respond(
+  return interaction.respond(
     products.map((product) => ({
       name: product.name,
       value: product.name,

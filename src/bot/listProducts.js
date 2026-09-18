@@ -8,19 +8,34 @@ const command = new SlashCommandBuilder()
   .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
 
 async function execute(interaction) {
-  const products = db
-    .prepare(
-      `
-        SELECT *
-        FROM products
-        ORDER BY id ASC
-    `,
-    )
-    .all();
+  let products;
+
+  try {
+    products = db
+      .prepare(
+        `
+          SELECT
+            id,
+            name,
+            status,
+            script_url
+          FROM products
+          ORDER BY id ASC
+        `,
+      )
+      .all();
+  } catch (error) {
+    console.error("List Products Database Error:", error);
+
+    return interaction.reply({
+      content: "Terjadi kesalahan saat mengambil daftar product.",
+      ephemeral: true,
+    });
+  }
 
   if (products.length === 0) {
     return interaction.reply({
-      content: "❌ Belum ada product.",
+      content: "Belum ada product.",
       ephemeral: true,
     });
   }
@@ -35,8 +50,8 @@ async function execute(interaction) {
     })
     .join("\n\n");
 
-  await interaction.reply({
-    content: `📦 **Tzockey Products**\n\n${list}`,
+  return interaction.reply({
+    content: `**Tzockey Products**\n\n${list}`,
     ephemeral: true,
   });
 }

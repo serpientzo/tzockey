@@ -1,6 +1,9 @@
 require("dotenv").config();
 
 const express = require("express");
+const dns = require("dns").promises;
+const net = require("net");
+
 const db = require("../database/database");
 const { generateSessionToken } = require("../utils/sessionToken");
 const logger = require("../utils/logger");
@@ -14,6 +17,8 @@ const SESSION_DURATION_MINUTES =
   Number(process.env.SESSION_DURATION_MINUTES) || 5;
 
 const SESSION_DURATION = SESSION_DURATION_MINUTES * 60 * 1000;
+
+const MAX_SCRIPT_SIZE = 1024 * 1024;
 
 if (!Number.isFinite(PORT) || PORT <= 0) {
   throw new Error("PORT tidak valid.");
@@ -110,23 +115,264 @@ function isValidString(value, maxLength) {
   );
 }
 
+function isPrivateIPv4(ip) {
+  const parts = ip.split(".").map(Number);
+
+  if (parts.length !== 4) {
+    return false;
+  }
+
+  if (parts.some((part) => !Number.isInteger(part))) {
+    return false;
+  }
+
+  const [a, b] = parts;
+
+  if (a === 10) {
+    return true;
+  }
+
+  if (a === 127) {
+    return true;
+  }
+
+  if (a === 169 && b === 254) {
+    return true;
+  }
+
+  if (a === 172 && b >= 16 && b <= 31) {
+    return true;
+  }
+
+  if (a === 192 && b === 168) {
+    return true;
+  }
+
+  if (a === 0) {
+    return true;
+  }
+
+  return false;
+}
+
+function isPrivateIPv6(ip) {
+  const normalized = ip.toLowerCase();
+
+  if (normalized === "::1") {
+    return true;
+  }
+
+  if (normalized === "::") {
+    return true;
+  }
+
+  if (normalized.startsWith("fc") || normalized.startsWith("fd")) {
+    return true;
+  }
+
+  if (
+    normalized.startsWith("fe8") ||
+    normalized.startsWith("fe9") ||
+    normalized.startsWith("fea") ||
+    normalized.startsWith("feb")
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+function isBlockedHostname(hostname) {
+  const normalized = hostname.toLowerCase().replace(/\.$/, "");
+
+  if (
+    normalized === "localhost" ||
+    normalized.endsWith(".localhost") ||
+    normalized.endsWith(".local")
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+async function isSafeScriptUrl(url) {
+  if (url.protocol !== "https:") {
+    return false;
+  }
+
+  if (url.username || url.password) {
+    return false;
+  }
+
+  const hostname = url.hostname;
+
+  if (!hostname) {
+    return false;
+  }
+
+  if (isBlockedHostname(hostname)) {
+    return false;
+  }
+
+  const ipType = net.isIP(hostname);
+
+  if (ipType === 4) {
+    return !isPrivateIPv4(hostname);
+  }
+
+  if (ipType === 6) {
+    return !isPrivateIPv6(hostname);
+  }
+
+  try {
+    const addresses = await dns.lookup(hostname, {
+      all: true,
+      verbatim: true,
+    });
+
+    if (!addresses || addresses.length === 0) {
+      return false;
+    }
+
+    for (const address of addresses) {
+      if (address.family === 4) {
+        if (isPrivateIPv4(address.address)) {
+          return false;
+        }
+      }
+
+      if (address.family === 6) {
+        if (isPrivateIPv6(address.address)) {
+          return false;
+        }
+      }
+    }
+
+    return true;
+  } catch (error) {
+    logger.error(`DNS lookup failed for script URL: ${error.message}`);
+
+    return false;
+  }
+}
+
+async function fetchScript(url) {
+  const controller = new AbortController();
+
+  const timeout = setTimeout(() => {
+    controller.abort();
+  }, 10000);
+
+  try {
+    const response = await fetch(url.toString(), {
+      method: "GET",
+      redirect: "error",
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      return {
+        success: false,
+        code: "SCRIPT_FETCH_FAILED",
+        message: "Script tidak dapat diambil.",
+      };
+    }
+
+    const contentLength = response.headers.get("content-length");
+
+    if (
+      contentLength &&
+      Number.isFinite(Number(contentLength)) &&
+      Number(contentLength) > MAX_SCRIPT_SIZE
+    ) {
+      return {
+        success: false,
+        code: "SCRIPT_TOO_LARGE",
+        message: "Ukuran script terlalu besar.",
+      };
+    }
+
+    if (!response.body) {
+      return {
+        success: false,
+        code: "SCRIPT_READ_FAILED",
+        message: "Gagal membaca script.",
+      };
+    }
+
+    const reader = response.body.getReader();
+
+    const chunks = [];
+    let totalSize = 0;
+
+    while (true) {
+      const { done, value } = await reader.read();
+
+      if (done) {
+        break;
+      }
+
+      totalSize += value.byteLength;
+
+      if (totalSize > MAX_SCRIPT_SIZE) {
+        await reader.cancel();
+
+        return {
+          success: false,
+          code: "SCRIPT_TOO_LARGE",
+          message: "Ukuran script terlalu besar.",
+        };
+      }
+
+      chunks.push(Buffer.from(value));
+    }
+
+    const script = Buffer.concat(chunks).toString("utf8");
+
+    if (!script || script.length === 0) {
+      return {
+        success: false,
+        code: "EMPTY_SCRIPT",
+        message: "Script kosong.",
+      };
+    }
+
+    return {
+      success: true,
+      script,
+    };
+  } catch (error) {
+    logger.error(`Script fetch failed: ${error.message}`);
+
+    return {
+      success: false,
+      code: "SCRIPT_FETCH_FAILED",
+      message: "Gagal mengambil script.",
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 function createSession(keyData, hwid) {
   const sessionToken = generateSessionToken();
 
   const createdAt = Date.now();
+
   const expiresAt = createdAt + SESSION_DURATION;
 
   db.prepare(
     `
-        INSERT INTO sessions (
-            session_token,
-            key_id,
-            discord_id,
-            hwid,
-            created_at,
-            expires_at
-        )
-        VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO sessions (
+        session_token,
+        key_id,
+        discord_id,
+        hwid,
+        created_at,
+        expires_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?)
     `,
   ).run(
     sessionToken,
@@ -201,20 +447,20 @@ app.post("/api/key/verify", (req, res) => {
   const keyData = db
     .prepare(
       `
-        SELECT
+          SELECT
             keys.*,
             products.name AS product_name,
             products.status AS product_status
-        FROM keys
-        JOIN products
+          FROM keys
+          JOIN products
             ON products.id = keys.product_id
-        WHERE keys.key = ?
-    `,
+          WHERE keys.key = ?
+        `,
     )
     .get(normalizedKey);
 
   if (!keyData) {
-    logger.warn(`Invalid key verification attempt`);
+    logger.warn("Invalid key verification attempt");
 
     return res.status(404).json({
       success: false,
@@ -222,12 +468,6 @@ app.post("/api/key/verify", (req, res) => {
       message: "Key tidak ditemukan.",
     });
   }
-
-  /*
-    |--------------------------------------------------------------------------
-    | Product validation
-    |--------------------------------------------------------------------------
-    */
 
   if (keyData.product_status !== "Active") {
     logger.warn(`Inactive product access: key_id=${keyData.id}`);
@@ -239,12 +479,6 @@ app.post("/api/key/verify", (req, res) => {
     });
   }
 
-  /*
-    |--------------------------------------------------------------------------
-    | Key status
-    |--------------------------------------------------------------------------
-    */
-
   if (keyData.status !== "Active") {
     return res.status(403).json({
       success: false,
@@ -253,18 +487,12 @@ app.post("/api/key/verify", (req, res) => {
     });
   }
 
-  /*
-    |--------------------------------------------------------------------------
-    | Expiration
-    |--------------------------------------------------------------------------
-    */
-
   if (keyData.expires_at && Date.now() >= keyData.expires_at) {
     db.prepare(
       `
-            UPDATE keys
-            SET status = 'Expired'
-            WHERE id = ?
+          UPDATE keys
+          SET status = 'Expired'
+          WHERE id = ?
         `,
     ).run(keyData.id);
 
@@ -279,20 +507,45 @@ app.post("/api/key/verify", (req, res) => {
 
   /*
     |--------------------------------------------------------------------------
-    | HWID
+    | Atomic HWID registration
     |--------------------------------------------------------------------------
     */
 
   if (!keyData.hwid) {
-    db.prepare(
-      `
+    const result = db
+      .prepare(
+        `
             UPDATE keys
             SET hwid = ?
             WHERE id = ?
-        `,
-    ).run(hwid, keyData.id);
+            AND hwid IS NULL
+          `,
+      )
+      .run(hwid, keyData.id);
 
-    logger.info(`HWID registered: key_id=${keyData.id}`);
+    if (result.changes === 0) {
+      const latestKeyData = db
+        .prepare(
+          `
+              SELECT hwid
+              FROM keys
+              WHERE id = ?
+            `,
+        )
+        .get(keyData.id);
+
+      if (!latestKeyData || latestKeyData.hwid !== hwid) {
+        logger.warn(`HWID registration race/mismatch: key_id=${keyData.id}`);
+
+        return res.status(403).json({
+          success: false,
+          code: "HWID_MISMATCH",
+          message: "HWID tidak cocok.",
+        });
+      }
+    } else {
+      logger.info(`HWID registered: key_id=${keyData.id}`);
+    }
   } else if (keyData.hwid !== hwid) {
     logger.warn(`HWID mismatch: key_id=${keyData.id}`);
 
@@ -313,12 +566,12 @@ app.post("/api/key/verify", (req, res) => {
     `
         DELETE FROM sessions
         WHERE key_id = ?
-    `,
+      `,
   ).run(keyData.id);
 
   /*
     |--------------------------------------------------------------------------
-    | Create new session
+    | Create session
     |--------------------------------------------------------------------------
     */
 
@@ -383,20 +636,20 @@ app.post("/api/session/verify", (req, res) => {
   const session = db
     .prepare(
       `
-        SELECT
+          SELECT
             sessions.*,
             keys.status AS key_status,
             keys.expires_at AS key_expires_at,
             keys.product_id,
             products.name AS product_name,
             products.status AS product_status
-        FROM sessions
-        JOIN keys
+          FROM sessions
+          JOIN keys
             ON keys.id = sessions.key_id
-        JOIN products
+          JOIN products
             ON products.id = keys.product_id
-        WHERE sessions.session_token = ?
-    `,
+          WHERE sessions.session_token = ?
+        `,
     )
     .get(session_token);
 
@@ -408,17 +661,11 @@ app.post("/api/session/verify", (req, res) => {
     });
   }
 
-  /*
-    |--------------------------------------------------------------------------
-    | Session expiration
-    |--------------------------------------------------------------------------
-    */
-
   if (Date.now() >= session.expires_at) {
     db.prepare(
       `
-            DELETE FROM sessions
-            WHERE id = ?
+          DELETE FROM sessions
+          WHERE id = ?
         `,
     ).run(session.id);
 
@@ -431,12 +678,6 @@ app.post("/api/session/verify", (req, res) => {
     });
   }
 
-  /*
-    |--------------------------------------------------------------------------
-    | HWID
-    |--------------------------------------------------------------------------
-    */
-
   if (session.hwid !== hwid) {
     logger.warn(`Session HWID mismatch: key_id=${session.key_id}`);
 
@@ -447,12 +688,6 @@ app.post("/api/session/verify", (req, res) => {
     });
   }
 
-  /*
-    |--------------------------------------------------------------------------
-    | Key status
-    |--------------------------------------------------------------------------
-    */
-
   if (session.key_status !== "Active") {
     return res.status(403).json({
       success: false,
@@ -461,25 +696,19 @@ app.post("/api/session/verify", (req, res) => {
     });
   }
 
-  /*
-    |--------------------------------------------------------------------------
-    | Key expiration
-    |--------------------------------------------------------------------------
-    */
-
   if (session.key_expires_at && Date.now() >= session.key_expires_at) {
     db.prepare(
       `
-            UPDATE keys
-            SET status = 'Expired'
-            WHERE id = ?
+          UPDATE keys
+          SET status = 'Expired'
+          WHERE id = ?
         `,
     ).run(session.key_id);
 
     db.prepare(
       `
-            DELETE FROM sessions
-            WHERE id = ?
+          DELETE FROM sessions
+          WHERE id = ?
         `,
     ).run(session.id);
 
@@ -491,12 +720,6 @@ app.post("/api/session/verify", (req, res) => {
       message: "Key sudah expired.",
     });
   }
-
-  /*
-    |--------------------------------------------------------------------------
-    | Product status
-    |--------------------------------------------------------------------------
-    */
 
   if (session.product_status !== "Active") {
     return res.status(403).json({
@@ -564,7 +787,7 @@ app.post("/api/script/load", async (req, res) => {
   const session = db
     .prepare(
       `
-        SELECT
+          SELECT
             sessions.*,
             keys.status AS key_status,
             keys.expires_at AS key_expires_at,
@@ -572,13 +795,13 @@ app.post("/api/script/load", async (req, res) => {
             products.name AS product_name,
             products.status AS product_status,
             products.script_url
-        FROM sessions
-        JOIN keys
+          FROM sessions
+          JOIN keys
             ON keys.id = sessions.key_id
-        JOIN products
+          JOIN products
             ON products.id = keys.product_id
-        WHERE sessions.session_token = ?
-    `,
+          WHERE sessions.session_token = ?
+        `,
     )
     .get(session_token);
 
@@ -590,17 +813,11 @@ app.post("/api/script/load", async (req, res) => {
     });
   }
 
-  /*
-    |--------------------------------------------------------------------------
-    | Session expiration
-    |--------------------------------------------------------------------------
-    */
-
   if (Date.now() >= session.expires_at) {
     db.prepare(
       `
-            DELETE FROM sessions
-            WHERE id = ?
+          DELETE FROM sessions
+          WHERE id = ?
         `,
     ).run(session.id);
 
@@ -610,12 +827,6 @@ app.post("/api/script/load", async (req, res) => {
       message: "Session sudah expired.",
     });
   }
-
-  /*
-    |--------------------------------------------------------------------------
-    | HWID
-    |--------------------------------------------------------------------------
-    */
 
   if (session.hwid !== hwid) {
     logger.warn(`Script HWID mismatch: key_id=${session.key_id}`);
@@ -627,12 +838,6 @@ app.post("/api/script/load", async (req, res) => {
     });
   }
 
-  /*
-    |--------------------------------------------------------------------------
-    | Key status
-    |--------------------------------------------------------------------------
-    */
-
   if (session.key_status !== "Active") {
     return res.status(403).json({
       success: false,
@@ -641,25 +846,19 @@ app.post("/api/script/load", async (req, res) => {
     });
   }
 
-  /*
-    |--------------------------------------------------------------------------
-    | Key expiration
-    |--------------------------------------------------------------------------
-    */
-
   if (session.key_expires_at && Date.now() >= session.key_expires_at) {
     db.prepare(
       `
-            UPDATE keys
-            SET status = 'Expired'
-            WHERE id = ?
+          UPDATE keys
+          SET status = 'Expired'
+          WHERE id = ?
         `,
     ).run(session.key_id);
 
     db.prepare(
       `
-            DELETE FROM sessions
-            WHERE id = ?
+          DELETE FROM sessions
+          WHERE id = ?
         `,
     ).run(session.id);
 
@@ -669,12 +868,6 @@ app.post("/api/script/load", async (req, res) => {
       message: "Key sudah expired.",
     });
   }
-
-  /*
-    |--------------------------------------------------------------------------
-    | Product status
-    |--------------------------------------------------------------------------
-    */
 
   if (session.product_status !== "Active") {
     return res.status(403).json({
@@ -686,7 +879,7 @@ app.post("/api/script/load", async (req, res) => {
 
   /*
     |--------------------------------------------------------------------------
-    | Script URL
+    | Script URL validation
     |--------------------------------------------------------------------------
     */
 
@@ -714,15 +907,13 @@ app.post("/api/script/load", async (req, res) => {
     });
   }
 
-  if (scriptUrl.protocol !== "https:" && scriptUrl.protocol !== "http:") {
-    logger.error(
-      `Unsupported script protocol: product_id=${session.product_id}`,
-    );
+  if (!(await isSafeScriptUrl(scriptUrl))) {
+    logger.error(`Blocked script URL: product_id=${session.product_id}`);
 
     return res.status(500).json({
       success: false,
       code: "INVALID_SCRIPT_URL",
-      message: "Protocol script URL tidak didukung.",
+      message: "Script URL tidak diizinkan.",
     });
   }
 
@@ -732,61 +923,15 @@ app.post("/api/script/load", async (req, res) => {
     |--------------------------------------------------------------------------
     */
 
-  let response;
+  const result = await fetchScript(scriptUrl);
 
-  try {
-    response = await fetch(scriptUrl.toString(), {
-      method: "GET",
-      redirect: "error",
-      signal: AbortSignal.timeout(10000),
-    });
-  } catch (error) {
-    logger.error(
-      `Script fetch failed: product_id=${session.product_id} error=${error.message}`,
-    );
+  if (!result.success) {
+    logger.error(`${result.code}: product_id=${session.product_id}`);
 
     return res.status(502).json({
       success: false,
-      code: "SCRIPT_FETCH_FAILED",
-      message: "Gagal mengambil script.",
-    });
-  }
-
-  if (!response.ok) {
-    logger.error(
-      `Script fetch returned ${response.status}: product_id=${session.product_id}`,
-    );
-
-    return res.status(502).json({
-      success: false,
-      code: "SCRIPT_FETCH_FAILED",
-      message: "Script tidak dapat diambil.",
-    });
-  }
-
-  let script;
-
-  try {
-    script = await response.text();
-  } catch (error) {
-    logger.error(
-      `Script read failed: product_id=${session.product_id} error=${error.message}`,
-    );
-
-    return res.status(502).json({
-      success: false,
-      code: "SCRIPT_READ_FAILED",
-      message: "Gagal membaca script.",
-    });
-  }
-
-  if (!script || script.length === 0) {
-    logger.error(`Empty script: product_id=${session.product_id}`);
-
-    return res.status(502).json({
-      success: false,
-      code: "EMPTY_SCRIPT",
-      message: "Script kosong.",
+      code: result.code,
+      message: result.message,
     });
   }
 
@@ -800,7 +945,7 @@ app.post("/api/script/load", async (req, res) => {
     message: "Script berhasil dimuat.",
     data: {
       product: session.product_name,
-      script,
+      script: result.script,
     },
   });
 });
@@ -816,9 +961,9 @@ setInterval(
     const result = db
       .prepare(
         `
-        DELETE FROM sessions
-        WHERE expires_at <= ?
-    `,
+          DELETE FROM sessions
+          WHERE expires_at <= ?
+        `,
       )
       .run(Date.now());
 
@@ -838,7 +983,11 @@ setInterval(
 app.use((error, req, res, next) => {
   logger.error(`${req.method} ${req.path} - ${error.message}`);
 
-  res.status(500).json({
+  if (res.headersSent) {
+    return next(error);
+  }
+
+  return res.status(500).json({
     success: false,
     code: "INTERNAL_SERVER_ERROR",
     message: "Internal server error.",
@@ -854,12 +1003,18 @@ app.use((error, req, res, next) => {
 app.listen(PORT, "0.0.0.0", async () => {
   logger.info(`Tzockey API berjalan di port ${PORT}`);
 
-  await createBackup();
+  if (process.env.NODE_ENV === "production") {
+    await createBackup();
 
-  setInterval(
-    () => {
-      createBackup();
-    },
-    6 * 60 * 60 * 1000,
-  );
+    setInterval(
+      () => {
+        createBackup();
+      },
+      6 * 60 * 60 * 1000,
+    );
+
+    logger.info("Database backup otomatis aktif.");
+  } else {
+    logger.info("Database backup otomatis dinonaktifkan untuk development.");
+  }
 });

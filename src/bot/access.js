@@ -9,9 +9,30 @@ const {
 
 const db = require("../database/database");
 
+function createTicketChannelName(user) {
+  const username = user.username
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 70);
+
+  if (!username) {
+    return `ticket-${user.id}`;
+  }
+
+  return `ticket-${username}`;
+}
+
 async function execute(interaction) {
   const guild = interaction.guild;
   const user = interaction.user;
+
+  /*
+  |--------------------------------------------------------------------------
+  | Server Check
+  |--------------------------------------------------------------------------
+  */
 
   if (!guild) {
     return interaction.reply({
@@ -20,13 +41,19 @@ async function execute(interaction) {
     });
   }
 
+  /*
+  |--------------------------------------------------------------------------
+  | Get Ticket Category
+  |--------------------------------------------------------------------------
+  */
+
   const setting = db
     .prepare(
       `
         SELECT value
         FROM settings
         WHERE key = 'ticket_category_id'
-    `,
+      `,
     )
     .get();
 
@@ -42,17 +69,25 @@ async function execute(interaction) {
   if (!category || category.type !== ChannelType.GuildCategory) {
     return interaction.reply({
       content:
-        "Ticket category tidak ditemukan. " +
+        "Ticket category tidak ditemukan.\n\n" +
         "Admin perlu mengatur ulang ticket category.",
       ephemeral: true,
     });
   }
 
+  /*
+  |--------------------------------------------------------------------------
+  | Check Existing Ticket
+  |--------------------------------------------------------------------------
+  */
+
+  const ticketTopic = `Tzockey Ticket | ${user.id}`;
+
   const existingTicket = guild.channels.cache.find(
     (channel) =>
       channel.type === ChannelType.GuildText &&
       channel.parentId === category.id &&
-      channel.topic === `Tzockey Ticket | ${user.id}`,
+      channel.topic === ticketTopic,
   );
 
   if (existingTicket) {
@@ -62,32 +97,54 @@ async function execute(interaction) {
     });
   }
 
-  const channelName = `ticket-${user.username}`
-    .toLowerCase()
-    .replace(/[^a-z0-9-]/g, "-")
-    .slice(0, 80);
+  /*
+  |--------------------------------------------------------------------------
+  | Create Ticket Channel
+  |--------------------------------------------------------------------------
+  */
 
-  const ticketChannel = await guild.channels.create({
-    name: channelName,
-    type: ChannelType.GuildText,
-    parent: category.id,
-    topic: `Tzockey Ticket | ${user.id}`,
+  const channelName = createTicketChannelName(user);
 
-    permissionOverwrites: [
-      {
-        id: guild.roles.everyone.id,
-        deny: [PermissionFlagsBits.ViewChannel],
-      },
-      {
-        id: user.id,
-        allow: [
-          PermissionFlagsBits.ViewChannel,
-          PermissionFlagsBits.SendMessages,
-          PermissionFlagsBits.ReadMessageHistory,
-        ],
-      },
-    ],
-  });
+  let ticketChannel;
+
+  try {
+    ticketChannel = await guild.channels.create({
+      name: channelName,
+      type: ChannelType.GuildText,
+      parent: category.id,
+      topic: ticketTopic,
+
+      permissionOverwrites: [
+        {
+          id: guild.roles.everyone.id,
+          deny: [PermissionFlagsBits.ViewChannel],
+        },
+        {
+          id: user.id,
+          allow: [
+            PermissionFlagsBits.ViewChannel,
+            PermissionFlagsBits.SendMessages,
+            PermissionFlagsBits.ReadMessageHistory,
+          ],
+        },
+      ],
+    });
+  } catch (error) {
+    console.error("Access Ticket Create Error:", error);
+
+    return interaction.reply({
+      content:
+        "Ticket gagal dibuat.\n\n" +
+        "Pastikan bot memiliki permission untuk membuat dan mengatur channel.",
+      ephemeral: true,
+    });
+  }
+
+  /*
+  |--------------------------------------------------------------------------
+  | Ticket Message
+  |--------------------------------------------------------------------------
+  */
 
   const embed = new EmbedBuilder()
     .setTitle("Access Request")
@@ -113,12 +170,33 @@ async function execute(interaction) {
 
   const row = new ActionRowBuilder().addComponents(closeButton);
 
-  await ticketChannel.send({
-    embeds: [embed],
-    components: [row],
-  });
+  try {
+    await ticketChannel.send({
+      embeds: [embed],
+      components: [row],
+    });
+  } catch (error) {
+    console.error("Access Ticket Message Error:", error);
 
-  await interaction.reply({
+    try {
+      await ticketChannel.delete("Gagal mengirim pesan ticket");
+    } catch (deleteError) {
+      console.error("Access Ticket Cleanup Error:", deleteError);
+    }
+
+    return interaction.reply({
+      content: "Ticket gagal disiapkan.",
+      ephemeral: true,
+    });
+  }
+
+  /*
+  |--------------------------------------------------------------------------
+  | Response
+  |--------------------------------------------------------------------------
+  */
+
+  return interaction.reply({
     content: `Ticket berhasil dibuat: ${ticketChannel}`,
     ephemeral: true,
   });

@@ -21,6 +21,12 @@ const command = new SlashCommandBuilder()
 async function execute(interaction) {
   const category = interaction.options.getChannel("category");
 
+  /*
+  |--------------------------------------------------------------------------
+  | Validate Category
+  |--------------------------------------------------------------------------
+  */
+
   if (!category || category.type !== ChannelType.GuildCategory) {
     return interaction.reply({
       content: "Category yang dipilih tidak valid.",
@@ -28,16 +34,44 @@ async function execute(interaction) {
     });
   }
 
-  db.prepare(
-    `
-        INSERT INTO settings (key, value)
-        VALUES ('ticket_category_id', ?)
-        ON CONFLICT(key)
-        DO UPDATE SET value = excluded.value
-    `,
-  ).run(category.id);
+  /*
+  |--------------------------------------------------------------------------
+  | Save Setting
+  |--------------------------------------------------------------------------
+  */
 
-  await interaction.reply({
+  try {
+    db.prepare(
+      `
+        INSERT INTO settings (
+          key,
+          value
+        )
+        VALUES (
+          'ticket_category_id',
+          ?
+        )
+        ON CONFLICT(key)
+        DO UPDATE SET
+          value = excluded.value
+      `,
+    ).run(category.id);
+  } catch (error) {
+    console.error("Set Ticket Category Database Error:", error);
+
+    return interaction.reply({
+      content: "Terjadi kesalahan saat menyimpan ticket category.",
+      ephemeral: true,
+    });
+  }
+
+  /*
+  |--------------------------------------------------------------------------
+  | Response
+  |--------------------------------------------------------------------------
+  */
+
+  return interaction.reply({
     content: `Ticket category berhasil diatur ke ${category}.`,
     ephemeral: true,
   });

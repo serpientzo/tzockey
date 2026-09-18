@@ -1,608 +1,352 @@
 require("dotenv").config();
+
 require("../api/server");
+
+const { DISCORD_TOKEN } = require("../config");
 
 require("../database/database");
 
 const { Client, GatewayIntentBits } = require("discord.js");
 
+/*
+|--------------------------------------------------------------------------
+| Commands
+|--------------------------------------------------------------------------
+*/
+
 const generateKey = require("./generateKey");
+const extendKey = require("./extendKey");
 const redeemKey = require("./redeemKey");
 const deleteKey = require("./deleteKey");
 const myKeys = require("./myKeys");
 const resetHwid = require("./resetHwid");
 const adminResetHwid = require("./adminResetHwid");
+
 const addProduct = require("./addProduct");
 const listProducts = require("./listProducts");
-const disableKey = require("./disableKey");
-const enableKey = require("./enableKey");
-const keyInfo = require("./keyInfo");
-const listKeys = require("./listKeys");
 const editProduct = require("./editProduct");
 const disableProduct = require("./disableProduct");
 const enableProduct = require("./enableProduct");
 const deleteProduct = require("./deleteProduct");
+
+const disableKey = require("./disableKey");
+const enableKey = require("./enableKey");
+const keyInfo = require("./keyInfo");
+const listKeys = require("./listKeys");
+
 const panel = require("./panel");
+
 const setTicketCategory = require("./setTicketCategory");
+
+const setRenewalCategory = require("./setRenewalCategory");
+
 const access = require("./access");
 const closeTicket = require("./closeTicket");
+
 const getScript = require("./getScript");
+
 const setLoaderUrl = require("./setLoaderUrl");
+
 const getLoader = require("./getLoader");
+
 const loaderInfo = require("./loaderInfo");
+
+const renewAccess = require("./renewAccess");
+
+/*
+|--------------------------------------------------------------------------
+| Discord Client
+|--------------------------------------------------------------------------
+*/
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds],
 });
 
+/*
+|--------------------------------------------------------------------------
+| Ready
+|--------------------------------------------------------------------------
+*/
+
 client.once("ready", () => {
   console.log(`Tzockey aktif sebagai ${client.user.tag}`);
 });
 
+/*
+|--------------------------------------------------------------------------
+| Interaction Handler
+|--------------------------------------------------------------------------
+*/
+
 client.on("interactionCreate", async (interaction) => {
+  /*
+    |--------------------------------------------------------------------------
+    | Autocomplete
+    |--------------------------------------------------------------------------
+    */
+
   if (interaction.isAutocomplete()) {
-    if (interaction.commandName === "generate-key") {
-      try {
-        await generateKey.autocomplete(interaction);
-      } catch (error) {
-        console.error("Generate Key Autocomplete Error:", error);
-      }
-    }
+    try {
+      switch (interaction.commandName) {
+        case "generate-key":
+          await generateKey.autocomplete(interaction);
+          break;
 
-    if (interaction.commandName === "list-keys") {
-      try {
-        await listKeys.autocomplete(interaction);
-      } catch (error) {
-        console.error("List Keys Autocomplete Error:", error);
-      }
-    }
+        case "list-keys":
+          await listKeys.autocomplete(interaction);
+          break;
 
-    if (interaction.commandName === "edit-product") {
-      try {
-        await editProduct.autocomplete(interaction);
-      } catch (error) {
-        console.error("Edit Product Autocomplete Error:", error);
-      }
-    }
+        case "edit-product":
+          await editProduct.autocomplete(interaction);
+          break;
 
-    if (interaction.commandName === "disable-product") {
-      try {
-        await disableProduct.autocomplete(interaction);
-      } catch (error) {
-        console.error("Disable Product Autocomplete Error:", error);
-      }
-    }
+        case "disable-product":
+          await disableProduct.autocomplete(interaction);
+          break;
 
-    if (interaction.commandName === "enable-product") {
-      try {
-        await enableProduct.autocomplete(interaction);
-      } catch (error) {
-        console.error("Enable Product Autocomplete Error:", error);
-      }
-    }
+        case "enable-product":
+          await enableProduct.autocomplete(interaction);
+          break;
 
-    if (interaction.commandName === "delete-product") {
-      try {
-        await deleteProduct.autocomplete(interaction);
-      } catch (error) {
-        console.error("Delete Product Autocomplete Error:", error);
+        case "delete-product":
+          await deleteProduct.autocomplete(interaction);
+          break;
       }
+    } catch (error) {
+      console.error("Autocomplete Error:", error);
     }
 
     return;
   }
+
+  /*
+    |--------------------------------------------------------------------------
+    | Buttons
+    |--------------------------------------------------------------------------
+    */
 
   if (interaction.isButton()) {
-    if (interaction.customId === "tzockey_redeem") {
-      try {
-        await redeemKey.showRedeemModal(interaction);
-      } catch (error) {
-        console.error("Redeem Button Error:", error);
+    try {
+      switch (true) {
+        case interaction.customId === "tzockey_redeem":
+          await redeemKey.showRedeemModal(interaction);
+          break;
 
-        if (!interaction.replied && !interaction.deferred) {
-          await interaction.reply({
-            content: "Terjadi kesalahan saat membuka Redeem Key.",
-            ephemeral: true,
-          });
+        case interaction.customId === "tzockey_my_keys":
+          await myKeys.showMyKeys(interaction);
+          break;
+
+        case interaction.customId === "tzockey_reset_hwid":
+          await resetHwid.showResetModal(interaction);
+          break;
+
+        case interaction.customId === "tzockey_access":
+          await access.execute(interaction);
+          break;
+
+        case interaction.customId === "tzockey_close_ticket":
+          await closeTicket.execute(interaction);
+          break;
+
+        case interaction.customId === "tzockey_script":
+          await getScript.execute(interaction);
+          break;
+
+        case interaction.customId.startsWith("tzockey_renew_"): {
+          const keyId = interaction.customId.replace("tzockey_renew_", "");
+
+          await renewAccess.execute(interaction, keyId);
+
+          break;
         }
       }
-    }
+    } catch (error) {
+      console.error("Button Interaction Error:", error);
 
-    if (interaction.customId === "tzockey_my_keys") {
-      try {
-        await myKeys.showMyKeys(interaction);
-      } catch (error) {
-        console.error("My Keys Button Error:", error);
-
-        if (!interaction.replied && !interaction.deferred) {
+      if (!interaction.replied && !interaction.deferred) {
+        try {
           await interaction.reply({
-            content: "Terjadi kesalahan saat mengambil informasi key.",
+            content: "Terjadi kesalahan saat memproses tombol.",
             ephemeral: true,
           });
-        }
-      }
-    }
-
-    if (interaction.customId === "tzockey_reset_hwid") {
-      try {
-        await resetHwid.execute(interaction);
-      } catch (error) {
-        console.error("Reset HWID Button Error:", error);
-
-        if (!interaction.replied && !interaction.deferred) {
-          await interaction.reply({
-            content: "Terjadi kesalahan saat reset HWID.",
-            ephemeral: true,
-          });
-        }
-      }
-    }
-
-    if (interaction.customId === "tzockey_access") {
-      try {
-        await access.execute(interaction);
-      } catch (error) {
-        console.error("Access Button Error:", error);
-
-        if (!interaction.replied && !interaction.deferred) {
-          await interaction.reply({
-            content: "Terjadi kesalahan saat membuat ticket.",
-            ephemeral: true,
-          });
-        }
-      }
-    }
-
-    if (interaction.customId === "tzockey_close_ticket") {
-      try {
-        await closeTicket.execute(interaction);
-      } catch (error) {
-        console.error("Close Ticket Button Error:", error);
-
-        if (!interaction.replied && !interaction.deferred) {
-          await interaction.reply({
-            content: "Terjadi kesalahan saat menutup ticket.",
-            ephemeral: true,
-          });
-        }
-      }
-    }
-
-    if (interaction.customId === "tzockey_script") {
-      try {
-        await getScript.execute(interaction);
-      } catch (error) {
-        console.error("Get Script Button Error:", error);
-
-        if (!interaction.replied && !interaction.deferred) {
-          await interaction.reply({
-            content: "Terjadi kesalahan saat memeriksa access.",
-            ephemeral: true,
-          });
+        } catch (replyError) {
+          console.error("Button Error Reply Failed:", replyError);
         }
       }
     }
 
     return;
   }
+
+  /*
+    |--------------------------------------------------------------------------
+    | Modals
+    |--------------------------------------------------------------------------
+    */
 
   if (interaction.isModalSubmit()) {
-    if (interaction.customId === "tzockey_redeem_modal") {
-      try {
-        await redeemKey.handleModal(interaction);
-      } catch (error) {
-        console.error("Redeem Modal Error:", error);
+    try {
+      switch (interaction.customId) {
+        case "tzockey_redeem_modal":
+          await redeemKey.handleModal(interaction);
+          break;
 
-        if (!interaction.replied && !interaction.deferred) {
+        case "tzockey_reset_hwid_modal":
+          await resetHwid.handleModal(interaction);
+          break;
+      }
+    } catch (error) {
+      console.error("Modal Interaction Error:", error);
+
+      if (!interaction.replied && !interaction.deferred) {
+        try {
           await interaction.reply({
-            content: "Terjadi kesalahan saat redeem key.",
+            content: "Terjadi kesalahan saat memproses form.",
             ephemeral: true,
           });
+        } catch (replyError) {
+          console.error("Modal Error Reply Failed:", replyError);
         }
       }
     }
 
     return;
   }
+
+  /*
+    |--------------------------------------------------------------------------
+    | Slash Commands
+    |--------------------------------------------------------------------------
+    */
 
   if (!interaction.isChatInputCommand()) {
     return;
   }
 
-  if (interaction.commandName === "generate-key") {
-    try {
-      await generateKey.execute(interaction);
-    } catch (error) {
-      console.error("Generate Key Error:", error);
+  try {
+    switch (interaction.commandName) {
+      case "generate-key":
+        await generateKey.execute(interaction);
+        break;
 
-      if (interaction.replied || interaction.deferred) {
+      case "extend-key":
+        await extendKey.execute(interaction);
+        break;
+
+      case "redeem-key":
+        await redeemKey.execute(interaction);
+        break;
+
+      case "delete-key":
+        await deleteKey.execute(interaction);
+        break;
+
+      case "my-keys":
+        await myKeys.execute(interaction);
+        break;
+
+      case "reset-hwid":
+        await resetHwid.execute(interaction);
+        break;
+
+      case "admin-reset-hwid":
+        await adminResetHwid.execute(interaction);
+        break;
+
+      case "add-product":
+        await addProduct.execute(interaction);
+        break;
+
+      case "list-products":
+        await listProducts.execute(interaction);
+        break;
+
+      case "edit-product":
+        await editProduct.execute(interaction);
+        break;
+
+      case "disable-product":
+        await disableProduct.execute(interaction);
+        break;
+
+      case "enable-product":
+        await enableProduct.execute(interaction);
+        break;
+
+      case "delete-product":
+        await deleteProduct.execute(interaction);
+        break;
+
+      case "disable-key":
+        await disableKey.execute(interaction);
+        break;
+
+      case "enable-key":
+        await enableKey.execute(interaction);
+        break;
+
+      case "key-info":
+        await keyInfo.execute(interaction);
+        break;
+
+      case "list-keys":
+        await listKeys.execute(interaction);
+        break;
+
+      case "panel":
+        await panel.execute(interaction);
+        break;
+
+      case "set-ticket-category":
+        await setTicketCategory.execute(interaction);
+        break;
+
+      case "set-renewal-category":
+        await setRenewalCategory.execute(interaction);
+        break;
+
+      case "set-loader-url":
+        await setLoaderUrl.execute(interaction);
+        break;
+
+      case "get-loader":
+        await getLoader.execute(interaction);
+        break;
+
+      case "loader-info":
+        await loaderInfo.execute(interaction);
+        break;
+    }
+  } catch (error) {
+    console.error(`Command Error [${interaction.commandName}]:`, error);
+
+    try {
+      if (interaction.deferred) {
+        await interaction.editReply({
+          content: "Terjadi kesalahan saat memproses command.",
+        });
+      } else if (interaction.replied) {
         await interaction.followUp({
-          content: "❌ Terjadi kesalahan saat membuat key.",
+          content: "Terjadi kesalahan saat memproses command.",
           ephemeral: true,
         });
       } else {
         await interaction.reply({
-          content: "❌ Terjadi kesalahan saat membuat key.",
+          content: "Terjadi kesalahan saat memproses command.",
           ephemeral: true,
         });
       }
+    } catch (replyError) {
+      console.error("Command Error Reply Failed:", replyError);
     }
-  }
-
-  if (interaction.commandName === "redeem-key") {
-    try {
-      await redeemKey.execute(interaction);
-    } catch (error) {
-      console.error("Redeem Key Error:", error);
-
-      if (interaction.replied || interaction.deferred) {
-        await interaction.followUp({
-          content: "❌ Terjadi kesalahan saat redeem key.",
-          ephemeral: true,
-        });
-      } else {
-        await interaction.reply({
-          content: "❌ Terjadi kesalahan saat redeem key.",
-          ephemeral: true,
-        });
-      }
-    }
-  }
-
-  if (interaction.commandName === "delete-key") {
-    try {
-      await deleteKey.execute(interaction);
-    } catch (error) {
-      console.error("Delete Key Error:", error);
-
-      if (interaction.replied || interaction.deferred) {
-        await interaction.followUp({
-          content: "❌ Terjadi kesalahan saat menghapus key.",
-          ephemeral: true,
-        });
-      } else {
-        await interaction.reply({
-          content: "❌ Terjadi kesalahan saat menghapus key.",
-          ephemeral: true,
-        });
-      }
-    }
-  }
-
-  if (interaction.commandName === "my-keys") {
-    try {
-      await myKeys.execute(interaction);
-    } catch (error) {
-      console.error("My Keys Error:", error);
-
-      if (interaction.replied || interaction.deferred) {
-        await interaction.followUp({
-          content: "❌ Terjadi kesalahan saat mengambil data key.",
-          ephemeral: true,
-        });
-      } else {
-        await interaction.reply({
-          content: "❌ Terjadi kesalahan saat mengambil data key.",
-          ephemeral: true,
-        });
-      }
-    }
-  }
-
-  if (interaction.commandName === "reset-hwid") {
-    try {
-      await resetHwid.execute(interaction);
-    } catch (error) {
-      console.error("Reset HWID Error:", error);
-
-      if (interaction.replied || interaction.deferred) {
-        await interaction.followUp({
-          content: "❌ Terjadi kesalahan saat reset HWID.",
-          ephemeral: true,
-        });
-      } else {
-        await interaction.reply({
-          content: "❌ Terjadi kesalahan saat reset HWID.",
-          ephemeral: true,
-        });
-      }
-    }
-  }
-
-  if (interaction.commandName === "admin-reset-hwid") {
-    try {
-      await adminResetHwid.execute(interaction);
-    } catch (error) {
-      console.error("Admin Reset HWID Error:", error);
-
-      if (interaction.replied || interaction.deferred) {
-        await interaction.followUp({
-          content: "❌ Terjadi kesalahan saat admin reset HWID.",
-          ephemeral: true,
-        });
-      } else {
-        await interaction.reply({
-          content: "❌ Terjadi kesalahan saat admin reset HWID.",
-          ephemeral: true,
-        });
-      }
-    }
-  }
-
-  if (interaction.commandName === "add-product") {
-    try {
-      await addProduct.execute(interaction);
-    } catch (error) {
-      console.error("Add Product Error:", error);
-
-      if (interaction.replied || interaction.deferred) {
-        await interaction.followUp({
-          content: "❌ Terjadi kesalahan saat menambahkan product.",
-          ephemeral: true,
-        });
-      } else {
-        await interaction.reply({
-          content: "❌ Terjadi kesalahan saat menambahkan product.",
-          ephemeral: true,
-        });
-      }
-    }
-  }
-
-  if (interaction.commandName === "list-products") {
-    try {
-      await listProducts.execute(interaction);
-    } catch (error) {
-      console.error("List Products Error:", error);
-
-      if (interaction.replied || interaction.deferred) {
-        await interaction.followUp({
-          content: "❌ Terjadi kesalahan saat mengambil daftar product.",
-          ephemeral: true,
-        });
-      } else {
-        await interaction.reply({
-          content: "❌ Terjadi kesalahan saat mengambil daftar product.",
-          ephemeral: true,
-        });
-      }
-    }
-  }
-
-  if (interaction.commandName === "edit-product") {
-    try {
-      await editProduct.execute(interaction);
-    } catch (error) {
-      console.error("Edit Product Error:", error);
-
-      if (interaction.replied || interaction.deferred) {
-        await interaction.followUp({
-          content: "❌ Terjadi kesalahan saat mengubah product.",
-          ephemeral: true,
-        });
-      } else {
-        await interaction.reply({
-          content: "❌ Terjadi kesalahan saat mengubah product.",
-          ephemeral: true,
-        });
-      }
-    }
-  }
-
-  if (interaction.commandName === "disable-product") {
-    try {
-      await disableProduct.execute(interaction);
-    } catch (error) {
-      console.error("Disable Product Error:", error);
-
-      if (interaction.replied || interaction.deferred) {
-        await interaction.followUp({
-          content: "❌ Terjadi kesalahan saat menonaktifkan product.",
-          ephemeral: true,
-        });
-      } else {
-        await interaction.reply({
-          content: "❌ Terjadi kesalahan saat menonaktifkan product.",
-          ephemeral: true,
-        });
-      }
-    }
-  }
-
-  if (interaction.commandName === "enable-product") {
-    try {
-      await enableProduct.execute(interaction);
-    } catch (error) {
-      console.error("Enable Product Error:", error);
-
-      if (interaction.replied || interaction.deferred) {
-        await interaction.followUp({
-          content: "❌ Terjadi kesalahan saat mengaktifkan product.",
-          ephemeral: true,
-        });
-      } else {
-        await interaction.reply({
-          content: "❌ Terjadi kesalahan saat mengaktifkan product.",
-          ephemeral: true,
-        });
-      }
-    }
-  }
-
-  if (interaction.commandName === "delete-product") {
-    try {
-      await deleteProduct.execute(interaction);
-    } catch (error) {
-      console.error("Delete Product Error:", error);
-
-      if (interaction.replied || interaction.deferred) {
-        await interaction.followUp({
-          content: "❌ Terjadi kesalahan saat menghapus product.",
-          ephemeral: true,
-        });
-      } else {
-        await interaction.reply({
-          content: "❌ Terjadi kesalahan saat menghapus product.",
-          ephemeral: true,
-        });
-      }
-    }
-  }
-
-  if (interaction.commandName === "disable-key") {
-    try {
-      await disableKey.execute(interaction);
-    } catch (error) {
-      console.error("Disable Key Error:", error);
-
-      if (!interaction.replied && !interaction.deferred) {
-        await interaction.reply({
-          content: "❌ Terjadi error saat menonaktifkan key.",
-          ephemeral: true,
-        });
-      }
-    }
-
-    return;
-  }
-
-  if (interaction.commandName === "enable-key") {
-    try {
-      await enableKey.execute(interaction);
-    } catch (error) {
-      console.error("Enable Key Error:", error);
-
-      if (!interaction.replied && !interaction.deferred) {
-        await interaction.reply({
-          content: "❌ Terjadi error saat mengaktifkan key.",
-          ephemeral: true,
-        });
-      }
-    }
-
-    return;
-  }
-
-  if (interaction.commandName === "key-info") {
-    try {
-      await keyInfo.execute(interaction);
-    } catch (error) {
-      console.error("Key Info Error:", error);
-
-      if (!interaction.replied && !interaction.deferred) {
-        await interaction.reply({
-          content: "❌ Terjadi error saat mengambil informasi key.",
-          ephemeral: true,
-        });
-      }
-    }
-
-    return;
-  }
-
-  if (interaction.commandName === "list-keys") {
-    try {
-      await listKeys.execute(interaction);
-    } catch (error) {
-      console.error("List Keys Error:", error);
-
-      if (!interaction.replied && !interaction.deferred) {
-        await interaction.reply({
-          content: "❌ Terjadi error saat mengambil daftar key.",
-          ephemeral: true,
-        });
-      }
-    }
-
-    return;
-  }
-
-  if (interaction.commandName === "panel") {
-    try {
-      await panel.execute(interaction);
-    } catch (error) {
-      console.error("Panel Error:", error);
-
-      if (interaction.replied || interaction.deferred) {
-        await interaction.followUp({
-          content: "Terjadi kesalahan saat mengirim panel.",
-          ephemeral: true,
-        });
-      } else {
-        await interaction.reply({
-          content: "Terjadi kesalahan saat mengirim panel.",
-          ephemeral: true,
-        });
-      }
-    }
-  }
-
-  if (interaction.commandName === "set-ticket-category") {
-    try {
-      await setTicketCategory.execute(interaction);
-    } catch (error) {
-      console.error("Set Ticket Category Error:", error);
-
-      if (!interaction.replied && !interaction.deferred) {
-        await interaction.reply({
-          content: "Terjadi kesalahan saat mengatur ticket category.",
-          ephemeral: true,
-        });
-      }
-    }
-
-    return;
-  }
-
-  if (interaction.commandName === "set-loader-url") {
-    try {
-      await setLoaderUrl.execute(interaction);
-    } catch (error) {
-      console.error("Set Loader URL Error:", error);
-
-      if (!interaction.replied && !interaction.deferred) {
-        await interaction.reply({
-          content: "Terjadi kesalahan saat mengatur loader URL.",
-          ephemeral: true,
-        });
-      }
-    }
-
-    return;
-  }
-
-  if (interaction.commandName === "get-loader") {
-    try {
-      await getLoader.execute(interaction);
-    } catch (error) {
-      console.error("Get Loader Error:", error);
-
-      if (!interaction.replied && !interaction.deferred) {
-        await interaction.reply({
-          content: "Terjadi kesalahan saat mengambil loader.",
-          ephemeral: true,
-        });
-      }
-    }
-
-    return;
-  }
-
-  if (interaction.commandName === "loader-info") {
-    try {
-      await loaderInfo.execute(interaction);
-    } catch (error) {
-      console.error("Loader Info Error:", error);
-
-      if (!interaction.replied && !interaction.deferred) {
-        await interaction.reply({
-          content: "Terjadi kesalahan saat mengambil informasi loader.",
-          ephemeral: true,
-        });
-      }
-    }
-
-    return;
   }
 });
 
-client.login(process.env.DISCORD_TOKEN);
+/*
+|--------------------------------------------------------------------------
+| Login
+|--------------------------------------------------------------------------
+*/
+
+client.login(DISCORD_TOKEN);

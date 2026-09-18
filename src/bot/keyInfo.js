@@ -6,6 +6,8 @@ const {
 
 const db = require("../database/database");
 
+const MAX_RESETS = 3;
+
 function formatUser(discordId) {
   if (!discordId) {
     return "Belum di-redeem";
@@ -30,26 +32,26 @@ function formatDate(timestamp) {
   return `<t:${Math.floor(timestamp / 1000)}:F>`;
 }
 
-function formatRemaining(expiresAt) {
-  if (!expiresAt) {
-    return "Tidak ada";
+function formatDuration(seconds) {
+  const totalSeconds = Number(seconds);
+
+  if (!Number.isFinite(totalSeconds) || totalSeconds <= 0) {
+    return "0s";
   }
 
-  const remaining = expiresAt - Date.now();
+  let remaining = Math.floor(totalSeconds);
 
-  if (remaining <= 0) {
-    return "Expired";
-  }
+  const days = Math.floor(remaining / 86400);
 
-  const totalSeconds = Math.floor(remaining / 1000);
+  remaining %= 86400;
 
-  const days = Math.floor(totalSeconds / 86400);
+  const hours = Math.floor(remaining / 3600);
 
-  const hours = Math.floor((totalSeconds % 86400) / 3600);
+  remaining %= 3600;
 
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const minutes = Math.floor(remaining / 60);
 
-  const seconds = totalSeconds % 60;
+  const secs = remaining % 60;
 
   const parts = [];
 
@@ -65,11 +67,29 @@ function formatRemaining(expiresAt) {
     parts.push(`${minutes}m`);
   }
 
-  if (seconds > 0 || parts.length === 0) {
-    parts.push(`${seconds}s`);
+  if (secs > 0 || parts.length === 0) {
+    parts.push(`${secs}s`);
   }
 
   return parts.join(" ");
+}
+
+function formatRemaining(expiresAt, status) {
+  if (status === "Expired") {
+    return "Expired";
+  }
+
+  if (!expiresAt) {
+    return "Tidak ada";
+  }
+
+  const remaining = expiresAt - Date.now();
+
+  if (remaining <= 0) {
+    return "Expired";
+  }
+
+  return formatDuration(Math.floor(remaining / 1000));
 }
 
 const command = new SlashCommandBuilder()
@@ -86,46 +106,112 @@ const command = new SlashCommandBuilder()
 async function execute(interaction) {
   const key = interaction.options.getString("key").trim().toUpperCase();
 
+  /*
+  |--------------------------------------------------------------------------
+  | Find Key
+  |--------------------------------------------------------------------------
+  */
+
   const keyData = db
     .prepare(
       `
         SELECT
-            keys.*,
-            products.name AS product_name,
-            products.status AS product_status
+          keys.id,
+          keys.key,
+          keys.product_id,
+          keys.plan,
+          keys.duration_seconds,
+          keys.extended_seconds,
+          keys.created_at,
+          keys.expires_at,
+          keys.discord_id,
+          keys.hwid,
+          keys.status,
+          keys.reset_count,
+          products.name AS product_name,
+          products.status AS product_status
         FROM keys
         JOIN products
-            ON products.id = keys.product_id
+          ON products.id = keys.product_id
         WHERE keys.key = ?
-    `,
+      `,
     )
     .get(key);
 
   if (!keyData) {
     return interaction.reply({
-      content: "❌ Key tidak ditemukan.",
+      content: "Key tidak ditemukan.",
       ephemeral: true,
     });
   }
 
+  /*
+  |--------------------------------------------------------------------------
+  | Expire Key
+  |--------------------------------------------------------------------------
+  */
+
+  const now = Date.now();
+
   if (
     keyData.status === "Active" &&
     keyData.expires_at &&
-    Date.now() >= keyData.expires_at
+    now >= keyData.expires_at
   ) {
-    db.prepare(
-      `
-            UPDATE keys
-            SET status = 'Expired'
-            WHERE id = ?
-        `,
-    ).run(keyData.id);
+    try {
+      const expireKey = db.transaction(() => {
+        db.prepare(
+          `
+              UPDATE keys
+              SET status = 'Expired'
+              WHERE id = ?
+              AND status = 'Active'
+            `,
+        ).run(keyData.id);
 
-    keyData.status = "Expired";
+        db.prepare(
+          `
+              DELETE FROM sessions
+              WHERE key_id = ?
+            `,
+        ).run(keyData.id);
+      });
+
+      expireKey();
+
+      keyData.status = "Expired";
+    } catch (error) {
+      console.error("Key Info Expire Error:", error);
+
+      return interaction.reply({
+        content: "Terjadi kesalahan saat memperbarui status key.",
+        ephemeral: true,
+      });
+    }
   }
 
+  /*
+  |--------------------------------------------------------------------------
+  | Duration
+  |--------------------------------------------------------------------------
+  */
+
+  const originalDuration = Number(keyData.duration_seconds || 0);
+
+  const extendedDuration = Number(keyData.extended_seconds || 0);
+
+  const totalDuration = originalDuration + extendedDuration;
+
+  const resetCount = Number(keyData.reset_count || 0);
+
+  /*
+  |--------------------------------------------------------------------------
+  | Build Embed
+  |--------------------------------------------------------------------------
+  */
+
   const embed = new EmbedBuilder()
-    .setTitle("🔑 Tzockey Key Information")
+    .setTitle("Tzockey Key Information")
     .addFields(
       {
         name: "Key",
@@ -139,22 +225,32 @@ async function execute(interaction) {
       },
       {
         name: "Product Status",
-        value: keyData.product_status,
+        value: `\`${keyData.product_status}\``,
         inline: true,
       },
       {
         name: "Plan",
-        value: keyData.plan,
+        value: `\`${keyData.plan}\``,
         inline: true,
       },
       {
-        name: "Duration Seconds",
-        value: `\`${keyData.duration_seconds}\``,
+        name: "Original Duration",
+        value: `\`${formatDuration(originalDuration)}\``,
+        inline: true,
+      },
+      {
+        name: "Extended Time",
+        value: `\`${formatDuration(extendedDuration)}\``,
+        inline: true,
+      },
+      {
+        name: "Total Duration",
+        value: `\`${formatDuration(totalDuration)}\``,
         inline: true,
       },
       {
         name: "Status",
-        value: keyData.status,
+        value: `\`${keyData.status}\``,
         inline: true,
       },
       {
@@ -164,7 +260,7 @@ async function execute(interaction) {
       },
       {
         name: "Reset Count",
-        value: `${keyData.reset_count}/3`,
+        value: `\`${resetCount}/${MAX_RESETS}\``,
         inline: true,
       },
       {
@@ -184,13 +280,13 @@ async function execute(interaction) {
       },
       {
         name: "Remaining",
-        value: formatRemaining(keyData.expires_at),
+        value: `\`${formatRemaining(keyData.expires_at, keyData.status)}\``,
         inline: true,
       },
     )
     .setTimestamp();
 
-  await interaction.reply({
+  return interaction.reply({
     embeds: [embed],
     ephemeral: true,
   });

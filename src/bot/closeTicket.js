@@ -2,7 +2,14 @@ const { PermissionFlagsBits } = require("discord.js");
 
 async function execute(interaction) {
   const channel = interaction.channel;
+
   const member = interaction.member;
+
+  /*
+  |--------------------------------------------------------------------------
+  | Validate Channel
+  |--------------------------------------------------------------------------
+  */
 
   if (!channel || !channel.topic) {
     return interaction.reply({
@@ -11,14 +18,30 @@ async function execute(interaction) {
     });
   }
 
-  const match = channel.topic.match(/^Tzockey Ticket \| (\d+)$/);
+  /*
+  |--------------------------------------------------------------------------
+  | Validate Ticket Type
+  |--------------------------------------------------------------------------
+  */
 
-  if (!match) {
+  const isAccessTicket = /^Tzockey Ticket \| (\d+)$/.test(channel.topic);
+
+  const isRenewalTicket = /^Tzockey Renewal \| (\d+) \| (\d+)$/.test(
+    channel.topic,
+  );
+
+  if (!isAccessTicket && !isRenewalTicket) {
     return interaction.reply({
       content: "Channel ini bukan ticket Tzockey.",
       ephemeral: true,
     });
   }
+
+  /*
+  |--------------------------------------------------------------------------
+  | Administrator Check
+  |--------------------------------------------------------------------------
+  */
 
   const isAdmin =
     member && member.permissions.has(PermissionFlagsBits.Administrator);
@@ -29,6 +52,12 @@ async function execute(interaction) {
       ephemeral: true,
     });
   }
+
+  /*
+  |--------------------------------------------------------------------------
+  | Close Ticket
+  |--------------------------------------------------------------------------
+  */
 
   await interaction.reply({
     content: "Ticket akan ditutup dalam 5 detik.",

@@ -61,6 +61,23 @@ db.exec(`
     )
 `);
 
+const keyColumns = db.prepare(`PRAGMA table_info(keys)`).all();
+
+const hasExtendedSeconds = keyColumns.some(
+  (column) => column.name === "extended_seconds",
+);
+
+if (!hasExtendedSeconds) {
+  db.exec(`
+    ALTER TABLE keys
+    ADD COLUMN extended_seconds INTEGER NOT NULL DEFAULT 0
+  `);
+
+  console.log(
+    "Database migration: kolom extended_seconds berhasil ditambahkan.",
+  );
+}
+
 console.log("Database Tzockey berhasil terhubung.");
 
 module.exports = db;

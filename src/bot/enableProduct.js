@@ -17,49 +17,92 @@ const command = new SlashCommandBuilder()
 async function execute(interaction) {
   const productName = interaction.options.getString("product").trim();
 
+  /*
+  |--------------------------------------------------------------------------
+  | Find Product
+  |--------------------------------------------------------------------------
+  */
+
   const product = db
     .prepare(
       `
-        SELECT *
+        SELECT
+          id,
+          name,
+          status
         FROM products
         WHERE LOWER(name) = LOWER(?)
-    `,
+      `,
     )
     .get(productName);
 
   if (!product) {
     return interaction.reply({
-      content: `❌ Product \`${productName}\` tidak ditemukan.`,
+      content: `Product \`${productName}\` tidak ditemukan.`,
       ephemeral: true,
     });
   }
+
+  /*
+  |--------------------------------------------------------------------------
+  | Check Status
+  |--------------------------------------------------------------------------
+  */
 
   if (product.status === "Active") {
     return interaction.reply({
-      content: `⚠️ Product \`${product.name}\` sudah Active.`,
+      content: `Product \`${product.name}\` sudah Active.`,
       ephemeral: true,
     });
   }
 
-  db.prepare(
-    `
+  /*
+  |--------------------------------------------------------------------------
+  | Enable Product
+  |--------------------------------------------------------------------------
+  */
+
+  try {
+    db.prepare(
+      `
         UPDATE products
         SET status = 'Active'
         WHERE id = ?
-    `,
-  ).run(product.id);
+      `,
+    ).run(product.id);
+  } catch (error) {
+    console.error("Enable Product Database Error:", error);
 
-  await interaction.reply({
+    return interaction.reply({
+      content: "Terjadi kesalahan saat mengaktifkan product.",
+      ephemeral: true,
+    });
+  }
+
+  /*
+  |--------------------------------------------------------------------------
+  | Response
+  |--------------------------------------------------------------------------
+  */
+
+  return interaction.reply({
     content:
-      `🟢 **Product berhasil diaktifkan!**\n\n` +
+      "Product berhasil diaktifkan.\n\n" +
       `Product: \`${product.name}\`\n` +
-      `Status: \`Active\``,
+      "Status: `Active`",
     ephemeral: true,
   });
 }
 
+/*
+|--------------------------------------------------------------------------
+| Autocomplete
+|--------------------------------------------------------------------------
+*/
+
 async function autocomplete(interaction) {
-  const focusedValue = interaction.options.getString("product").toLowerCase();
+  const focusedValue =
+    interaction.options.getString("product")?.trim().toLowerCase() || "";
 
   const products = db
     .prepare(
@@ -69,11 +112,11 @@ async function autocomplete(interaction) {
         WHERE LOWER(name) LIKE ?
         ORDER BY name ASC
         LIMIT 25
-    `,
+      `,
     )
     .all(`%${focusedValue}%`);
 
-  await interaction.respond(
+  return interaction.respond(
     products.map((product) => ({
       name: product.name,
       value: product.name,

@@ -6,7 +6,10 @@ const command = new SlashCommandBuilder()
   .setName("set-loader-url")
   .setDescription("Mengatur URL dan version loader Tzockey")
   .addStringOption((option) =>
-    option.setName("url").setDescription("URL raw loader").setRequired(true),
+    option
+      .setName("url")
+      .setDescription("URL HTTPS raw loader")
+      .setRequired(true),
   )
   .addStringOption((option) =>
     option
@@ -17,9 +20,33 @@ const command = new SlashCommandBuilder()
   .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
 
 async function execute(interaction) {
-  const url = interaction.options.getString("url").trim();
+  const urlInput = interaction.options.getString("url");
 
-  const version = interaction.options.getString("version").trim();
+  const versionInput = interaction.options.getString("version");
+
+  const url = urlInput.trim();
+
+  const version = versionInput.trim();
+
+  /*
+  |--------------------------------------------------------------------------
+  | Validate URL
+  |--------------------------------------------------------------------------
+  */
+
+  if (!url) {
+    return interaction.reply({
+      content: "URL loader tidak boleh kosong.",
+      ephemeral: true,
+    });
+  }
+
+  if (url.length > 2048) {
+    return interaction.reply({
+      content: "URL loader terlalu panjang.",
+      ephemeral: true,
+    });
+  }
 
   let parsedUrl;
 
@@ -32,12 +59,25 @@ async function execute(interaction) {
     });
   }
 
-  if (!["http:", "https:"].includes(parsedUrl.protocol)) {
+  if (parsedUrl.protocol !== "https:") {
     return interaction.reply({
-      content: "URL loader harus menggunakan HTTP atau HTTPS.",
+      content: "URL loader harus menggunakan HTTPS.",
       ephemeral: true,
     });
   }
+
+  if (parsedUrl.username || parsedUrl.password) {
+    return interaction.reply({
+      content: "URL loader tidak valid.",
+      ephemeral: true,
+    });
+  }
+
+  /*
+  |--------------------------------------------------------------------------
+  | Validate Version
+  |--------------------------------------------------------------------------
+  */
 
   if (!/^\d+\.\d+\.\d+$/.test(version)) {
     return interaction.reply({
@@ -47,25 +87,53 @@ async function execute(interaction) {
     });
   }
 
-  const update = db.prepare(`
-        INSERT INTO settings (key, value)
-        VALUES (?, ?)
-        ON CONFLICT(key)
-        DO UPDATE SET value = excluded.value
-    `);
+  /*
+  |--------------------------------------------------------------------------
+  | Update Settings
+  |--------------------------------------------------------------------------
+  */
 
-  const updateLoader = db.transaction(() => {
-    update.run("loader_url", url);
-    update.run("loader_version", version);
-  });
+  try {
+    const update = db.prepare(
+      `
+          INSERT INTO settings (
+            key,
+            value
+          )
+          VALUES (?, ?)
+          ON CONFLICT(key)
+          DO UPDATE SET
+            value = excluded.value
+        `,
+    );
 
-  updateLoader();
+    const updateLoader = db.transaction(() => {
+      update.run("loader_url", parsedUrl.toString());
 
-  await interaction.reply({
+      update.run("loader_version", version);
+    });
+
+    updateLoader();
+  } catch (error) {
+    console.error("Set Loader URL Database Error:", error);
+
+    return interaction.reply({
+      content: "Terjadi kesalahan saat memperbarui loader.",
+      ephemeral: true,
+    });
+  }
+
+  /*
+  |--------------------------------------------------------------------------
+  | Response
+  |--------------------------------------------------------------------------
+  */
+
+  return interaction.reply({
     content:
       "Loader berhasil diperbarui.\n\n" +
       `Version: \`${version}\`\n` +
-      `URL: \`${url}\``,
+      `URL: \`${parsedUrl.toString()}\``,
     ephemeral: true,
   });
 }

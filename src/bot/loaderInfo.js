@@ -15,10 +15,15 @@ async function execute(interaction) {
   const settings = db
     .prepare(
       `
-        SELECT key, value
+        SELECT
+          key,
+          value
         FROM settings
-        WHERE key IN ('loader_url', 'loader_version')
-    `,
+        WHERE key IN (
+          'loader_url',
+          'loader_version'
+        )
+      `,
     )
     .all();
 
@@ -26,29 +31,81 @@ async function execute(interaction) {
     settings.map((setting) => [setting.key, setting.value]),
   );
 
-  if (!data.loader_url) {
+  /*
+  |--------------------------------------------------------------------------
+  | Validate Loader URL
+  |--------------------------------------------------------------------------
+  */
+
+  if (!data.loader_url || typeof data.loader_url !== "string") {
     return interaction.reply({
       content: "Loader URL belum dikonfigurasi.",
       ephemeral: true,
     });
   }
 
+  const loaderUrl = data.loader_url.trim();
+
+  let parsedUrl;
+
+  try {
+    parsedUrl = new URL(loaderUrl);
+  } catch {
+    return interaction.reply({
+      content:
+        "Loader URL tidak valid.\n\n" +
+        "Gunakan `/set-loader-url` untuk mengatur ulang.",
+      ephemeral: true,
+    });
+  }
+
+  if (parsedUrl.protocol !== "https:") {
+    return interaction.reply({
+      content: "Loader URL harus menggunakan HTTPS.",
+      ephemeral: true,
+    });
+  }
+
+  if (parsedUrl.username || parsedUrl.password) {
+    return interaction.reply({
+      content: "Loader URL tidak valid.",
+      ephemeral: true,
+    });
+  }
+
+  /*
+  |--------------------------------------------------------------------------
+  | Loader Version
+  |--------------------------------------------------------------------------
+  */
+
+  const version =
+    typeof data.loader_version === "string" && data.loader_version.trim()
+      ? data.loader_version.trim()
+      : "Unknown";
+
+  /*
+  |--------------------------------------------------------------------------
+  | Build Embed
+  |--------------------------------------------------------------------------
+  */
+
   const embed = new EmbedBuilder()
     .setTitle("Loader Information")
     .addFields(
       {
         name: "Version",
-        value: `\`${data.loader_version || "Unknown"}\``,
+        value: `\`${version}\``,
         inline: true,
       },
       {
         name: "Status",
-        value: "`Active`",
+        value: "`Configured`",
         inline: true,
       },
       {
         name: "URL",
-        value: `\`${data.loader_url}\``,
+        value: `\`${parsedUrl.toString()}\``,
         inline: false,
       },
     )
